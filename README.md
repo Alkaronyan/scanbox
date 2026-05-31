@@ -1,99 +1,114 @@
-# SCANBOX - Dynamic Video Switcher Module
+# SCANBOX — Dynamic Video Switcher Module
 
-A decoupled, deterministic video source switcher designed for embedded systems (Raspberry Pi CM4) running isolated within Docker containers. Facilitates hot-swapping between physical hardware cameras and emulated testing streams via a REST API and web UI, without breaking downstream video pipeline integrity.
+A deterministic video source switcher for Raspberry Pi 4. Hot-swaps between a physical USB camera and a synthetic mock source via a REST API and web UI. Accessible over LAN/WiFi or directly via USB cable (no router needed).
 
-## Project Architecture
+## Architecture
 
-### Containerization Philosophy (Strict)
-
-Everything that *can* run inside a container *does*. The host OS is kept clean. Only the minimum that **must** live on the host is installed, fully automated by `setup_host.sh`.
-
-**Mandatory host-only requirements:**
-* **Docker Engine** — container runtime
-* **Kernel headers** (`linux-headers-*`) — for out-of-tree v4l2loopback compilation inside Vid_Mux_TEST
-* **git** — repository management
-
-Everything else (GStreamer, Python, build toolchain, v4l2loopback sources, etc.) lives inside containers.
+### Containerization (strict)
+Everything that can run in a container does. The host OS stays minimal. Only Docker Engine, kernel headers, git, and systemd service files are installed on the host — all automated by `scripts/setup_host.sh`.
 
 ### Containers
 
-* **Vid_Mux** — Production application. GStreamer input-selector pipeline, Flask REST API + Web UI, MJPEG HTTP stream. Ports: 5000 (API + UI + stream).
-* **Vid_Mux_TEST** — Development scaffold. Compiles and loads v4l2loopback into the shared kernel, feeds synthetic SMPTE pattern to /dev/video200. Discarded in production.
+| Container | Purpose |
+|---|---|
+| **Vid_Mux** | GStreamer pipeline, Flask REST API, MJPEG stream, Web UI. Port 5000. |
+| **Vid_Mux_TEST** | Compiles v4l2loopback v0.15.3 against the host kernel, creates /dev/video200, feeds a live SMPTE test pattern. |
+| **scanbox_dhcp** | dnsmasq DHCP server on usb0. Assigns IP to the connected Windows PC automatically. |
 
-### Device Mapping
+### USB NCM Direct Link
 
-| Internal path | Host source | Description |
-|---|---|---|
-| /dev/video100 | /dev/v4l/by-id/usb-046d_0809_5DD0F8C2-video-index0 | Physical USB camera (Logitech) |
-| /dev/video200 | /dev/video200 (created by Vid_Mux_TEST) | Synthetic mock camera |
+| Side | IP |
+|---|---|
+| Pi | 192.168.55.1 |
+| Windows PC | 192.168.55.100–200 (DHCP, automatic) |
+
+Windows 11 recognises the Pi as a USB ethernet adapter natively — no drivers to install.
 
 ## Repository Structure
 
 ```
 scanbox/
-├── app/
-│   ├── Vid_Mux/           # Production container
-│   │   ├── Dockerfile
-│   │   ├── entrypoint.sh
-│   │   ├── main.py        # Process entry point (single process, two threads)
-│   │   ├── switcher.py    # GStreamer pipeline + input-selector
-│   │   ├── api.py         # Flask REST API + MJPEG stream + Web UI
-│   │   ├── templates/
-│   │   │   └── index.html
-│   │   └── static/
-│   │       └── style.css
-│   └── snapshots/         # Bind-mounted snapshot storage (persists outside container)
-├── test/
-│   ├── Vid_Mux_TEST/      # Mock camera scaffold
-│   │   ├── Dockerfile
-│   │   ├── entrypoint.sh
-│   │   └── mock_streamer.py
-│   └── capture_test.sh    # Frame capture test tool
+├── Vid_Mux/              # Production container
+│   ├── Dockerfile
+│   ├── entrypoint.sh
+│   ├── main.py           # Entry point (GStreamer thread + Flask thread)
+│   ├── switcher.py       # GStreamer pipeline + input-selector
+│   ├── api.py            # Flask REST API + MJPEG stream + Web UI
+│   ├── templates/index.html
+│   └── static/style.css
+├── Vid_Mux_TEST/         # Mock camera scaffold
+│   ├── Dockerfile
+│   ├── entrypoint.sh
+│   └── mock_streamer.py
+├── scanbox_dhcp/         # DHCP container for USB NCM link
+│   ├── Dockerfile
+│   ├── dnsmasq.conf
+│   └── entrypoint.sh
+├── snapshots/            # Snapshot storage (bind-mounted, persists outside container)
 ├── docs/
 │   ├── ARCH_VID_MUX.md
 │   ├── ARCH_VID_MUX_TEST_FRAMEWORK.md
-│   └── RESTART_PROMPT.md  # LLM collaboration context
-├── setup_host.sh          # Host provisioning (run once)
-└── rebuild_vid_mux.sh     # Stop → rebuild → relaunch Vid_Mux
+│   └── RESTART_PROMPT.md       # LLM collaboration context
+├── scripts/
+│   ├── setup_host.sh           # Host provisioning (run once as root, idempotent)
+│   ├── setup_usb_gadget.sh     # USB NCM gadget configfs setup
+│   ├── rebuild_vid_mux.sh      # Rebuild and relaunch Vid_Mux manually
+│   └── capture_test.sh         # Single-frame capture diagnostic tool
+├── systemd/
+│   ├── scanbox-gadget.service  # Configures USB NCM gadget at boot
+│   └── scanbox-stack.service   # Runs docker compose up at boot
+├── tests/
+│   ├── run_all.sh              # Master test runner with summary table
+│   ├── test_cameras.sh         # Camera detection + frame capture
+│   ├── test_api.sh             # REST API endpoint validation
+│   └── test_containers.sh      # Container/image/device checks
+├── docker-compose.yml          # Orchestrates all 3 containers
+└── .env                        # KBUILD_DIR (generated by setup_host.sh, gitignored)
 ```
 
 ## Quick Start
 
-### 1. Host provisioning (fresh Pi, run once)
+### Fresh Pi setup (run once)
 ```bash
-sudo ./setup_host.sh
-newgrp docker
+sudo ./scripts/setup_host.sh
+```
+This installs Docker, kernel headers, systemd services, and generates `.env`. After the first run, reboot:
+```bash
+sudo reboot
 ```
 
-### 2. Start the mock camera scaffold
+### Build images (run once, or after code changes)
 ```bash
-cd test/Vid_Mux_TEST
-docker build -t vid_mux_test .
-KBUILD_DIR="$(dirname "$(readlink -f /lib/modules/$(uname -r)/build/scripts)")"
-docker run -d --name vid_mux_test --privileged --network=host \
-  -v /lib/modules:/lib/modules:ro \
-  -v /usr/src:/usr/src:ro \
-  -v "${KBUILD_DIR}:${KBUILD_DIR}:ro" \
-  vid_mux_test
+docker compose build
 ```
 
-### 3. Build and run the production switcher
+### Everything starts automatically on boot
+After the initial setup, the full stack starts on every boot with no manual intervention:
+- USB NCM gadget and DHCP configured
+- All containers started in the correct order
+
+### Manual start (if needed)
 ```bash
-./rebuild_vid_mux.sh
+docker compose up -d
 ```
 
-### 4. Open the web UI
-Navigate to `http://<pi-ip>:5000` in any browser on the local network.
+### Access the web UI
+| Connection | URL |
+|---|---|
+| USB cable (direct) | http://192.168.55.1:5000 |
+| WiFi / LAN | http://\<pi-ip\>:5000 |
 
-## Web UI
+## Boot Sequence
 
-* **Live stream** — MJPEG stream embedded directly in the browser (no plugins needed)
-* **Source selector** — switch between cameras with click, Tab, or ← → keys
-* **Snapshot** — capture and display the last frame (Space key)
-* **Camera controls** — Pan/Tilt/Zoom/Focus panel (UI present, API pending)
-* **Keyboard shortcuts** — F1 to open reference modal
+```
+scanbox-gadget.service  →  USB NCM gadget (usb0 = 192.168.55.1)
+scanbox-stack.service   →  docker compose up -d
+    ├── scanbox_dhcp     →  DHCP server on usb0
+    ├── vid_mux_test     →  compiles v4l2loopback → /dev/video200 (healthcheck)
+    └── vid_mux          →  waits for vid_mux_test healthy → Flask :5000
+```
 
-## REST API (port 5000)
+## REST API
 
 | Method | Path | Description |
 |---|---|---|
@@ -103,3 +118,18 @@ Navigate to `http://<pi-ip>:5000` in any browser on the local network.
 | POST | /api/v1/source | Switch source `{"source_id": 0\|1}` |
 | POST | /api/v1/snapshot | Capture frame to disk |
 | GET | /api/v1/snapshot/last | Retrieve last snapshot |
+| GET | /api/v1/camera/controls | Current V4L2 control values |
+| POST | /api/v1/camera/control | Set V4L2 control `{"control": "saturation", "value": 128}` |
+
+## Running Tests
+
+```bash
+./tests/run_all.sh
+```
+
+Individual suites:
+```bash
+./tests/test_cameras.sh     # requires cameras connected
+./tests/test_api.sh         # requires vid_mux running
+./tests/test_containers.sh  # requires all containers running
+```

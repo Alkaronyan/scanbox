@@ -91,26 +91,43 @@ def _on_new_sample(appsink):
 # Pipeline
 # ---------------------------------------------------------------------------
 
-PIPELINE_DESC = """
+_PIPELINE_SRC1_REAL = """
+    v4l2src device=/dev/video200 name=src1 io-mode=rw
+        ! video/x-raw,width=640,height=480,framerate=30/1
+        ! videoconvert ! video/x-raw,format=I420
+        ! queue name=q1 ! selector.sink_1
+"""
+
+# Fallback used in production when /dev/video200 is absent (vid_mux_test not running).
+# videotestsrc generates a synthetic SMPTE colour-bar pattern so the two-source
+# switching UI remains functional without a real second device.
+_PIPELINE_SRC1_MOCK = """
+    videotestsrc pattern=smpte name=src1
+        ! video/x-raw,width=640,height=480,framerate=30/1,format=I420
+        ! queue name=q1 ! selector.sink_1
+"""
+
+_PIPELINE_TEMPLATE = """
     v4l2src device=/dev/video100 name=src0
         ! image/jpeg,width=640,height=480,framerate=30/1
-        ! jpegdec
-        ! videoconvert
-        ! video/x-raw,format=I420
-        ! queue name=q0
-        ! input-selector name=selector
+        ! jpegdec ! videoconvert ! video/x-raw,format=I420
+        ! queue name=q0 ! input-selector name=selector
 
-    v4l2src device=/dev/video200 name=src1
-        ! video/x-raw,width=640,height=480,framerate=30/1
-        ! videoconvert
-        ! video/x-raw,format=I420
-        ! queue name=q1
-        ! selector.sink_1
+    {src1}
 
     selector.
         ! jpegenc quality=85
         ! appsink name=output emit-signals=true max-buffers=2 drop=true sync=false
 """
+
+import os as _os
+
+def _build_pipeline_desc() -> str:
+    if _os.path.exists("/dev/video200"):
+        log.info("video200 present — using real mock source (Vid_Mux_TEST).")
+        return _PIPELINE_TEMPLATE.format(src1=_PIPELINE_SRC1_REAL)
+    log.warning("video200 not found — falling back to synthetic SMPTE source for sink_1.")
+    return _PIPELINE_TEMPLATE.format(src1=_PIPELINE_SRC1_MOCK)
 
 # ---------------------------------------------------------------------------
 # Main loop
@@ -133,7 +150,7 @@ def run():
     Gst.init(None)
     log.info("Building GStreamer pipeline...")
 
-    pipeline = Gst.parse_launch(PIPELINE_DESC)
+    pipeline = Gst.parse_launch(_build_pipeline_desc())
 
     _selector_el = pipeline.get_by_name("selector")
     if _selector_el is None:

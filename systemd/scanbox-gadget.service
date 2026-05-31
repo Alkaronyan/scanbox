@@ -1,0 +1,25 @@
+[Unit]
+Description=Scanbox USB NCM Gadget
+# configfs is a kernel filesystem that must be mounted before we can configure
+# the gadget. It is available once the kernel core filesystems are up.
+After=sys-kernel-config.mount local-fs.target
+# The gadget must be ready before Docker starts — Docker compose needs usb0
+# to exist so scanbox_dhcp can bind dnsmasq to it.
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/setup_usb_gadget.sh
+# On stop: unbind UDC and remove gadget so it can be re-created cleanly.
+ExecStop=/bin/bash -c '\
+    echo "" > /sys/kernel/config/usb_gadget/scanbox/UDC 2>/dev/null || true; \
+    rm -f /sys/kernel/config/usb_gadget/scanbox/configs/c.1/ncm.usb0 2>/dev/null || true; \
+    rmdir /sys/kernel/config/usb_gadget/scanbox/configs/c.1/strings/0x409 2>/dev/null || true; \
+    rmdir /sys/kernel/config/usb_gadget/scanbox/configs/c.1 2>/dev/null || true; \
+    rmdir /sys/kernel/config/usb_gadget/scanbox/functions/ncm.usb0 2>/dev/null || true; \
+    rmdir /sys/kernel/config/usb_gadget/scanbox/strings/0x409 2>/dev/null || true; \
+    rmdir /sys/kernel/config/usb_gadget/scanbox 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target

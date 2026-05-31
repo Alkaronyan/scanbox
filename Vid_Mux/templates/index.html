@@ -231,6 +231,24 @@ let zoomLevel  = 50;
 let focusLevel = 50;
 let sliderTimers = {};
 
+// ── Stream auto-reconnect ─────────────────────────────────────────────────
+// The MJPEG stream is a persistent HTTP connection. If it drops (e.g. during
+// a source switch or network blip), the browser won't reconnect automatically.
+// This watchdog reloads the src when the img reports an error or goes stale.
+(function initStreamWatchdog() {
+  const img = document.getElementById('live-stream');
+  if (!img) return;
+  let reconnectTimer = null;
+  function scheduleReconnect(delayMs) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => {
+      img.src = '/stream?' + Date.now();  // cache-bust forces a fresh connection
+    }, delayMs);
+  }
+  img.onerror = () => scheduleReconnect(1000);
+  img.onabort = () => scheduleReconnect(1000);
+}());
+
 // Debounce slider — send to API 300ms after user stops dragging
 function onSlider(name, value) {
   document.getElementById('val-' + name).textContent = value;

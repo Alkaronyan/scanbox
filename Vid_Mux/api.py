@@ -18,6 +18,7 @@ import logging
 import queue
 import subprocess
 import re
+import threading
 from flask import Flask, request, jsonify, send_file, render_template, Response
 import switcher
 
@@ -27,6 +28,11 @@ app = Flask(__name__)
 
 SNAPSHOT_DIR = "/exports/snapshots"
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+
+# Last frame cache — written by the MJPEG stream generator, read by snapshot.
+# Prevents snapshot from competing with an active stream connection for queue items.
+_last_frame: bytes | None = None
+_last_frame_lock = threading.Lock()
 
 PHYSICAL_DEVICE = "/dev/video100"
 
@@ -101,13 +107,22 @@ def _save_snapshot(jpeg_bytes: bytes) -> str:
 # ---------------------------------------------------------------------------
 
 def _mjpeg_generator():
+    global _last_frame
     boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
     while True:
         try:
             frame = switcher.frame_queue.get(timeout=2.0)
-            yield boundary + frame + b"\r\n"
+            with _last_frame_lock:
+                _last_frame = frame
         except queue.Empty:
-            yield b"--frame\r\n\r\n"
+            # During source switches there is a brief gap with no new frames.
+            # Send the last known frame (freeze) instead of an empty part —
+            # empty multipart parts break browser MJPEG connections.
+            with _last_frame_lock:
+                frame = _last_frame
+            if frame is None:
+                continue
+        yield boundary + frame + b"\r\n"
 
 # ---------------------------------------------------------------------------
 # Routes
@@ -151,10 +166,16 @@ def set_source():
 
 @app.post("/api/v1/snapshot")
 def snapshot():
-    try:
-        frame = switcher.frame_queue.get(timeout=3.0)
-    except queue.Empty:
-        return jsonify({"status": "error", "message": "No frame available"}), 504
+    # Use the last frame cached by the stream generator (avoids competing with
+    # an active MJPEG stream connection that drains the queue continuously).
+    with _last_frame_lock:
+        frame = _last_frame
+    if frame is None:
+        # No stream consumer active — pull directly from the queue.
+        try:
+            frame = switcher.frame_queue.get(timeout=3.0)
+        except queue.Empty:
+            return jsonify({"status": "error", "message": "No frame available"}), 504
     path = _save_snapshot(frame)
     log.info("Snapshot saved: %s", path)
     return jsonify({"status": "success", "file_path": path, "filename": os.path.basename(path)})

@@ -5,7 +5,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "${SCRIPT_DIR}"
+# Operate from the project root (one level above scripts/)
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${PROJECT_ROOT}"
 
 PHYSICAL_CAM="$(ls /dev/v4l/by-id/*-video-index0 2>/dev/null | head -n1)"
 if [[ -z "${PHYSICAL_CAM}" ]]; then
@@ -17,14 +19,14 @@ echo "🛑 Stopping and removing vid_mux..."
 docker rm -f vid_mux 2>/dev/null || true
 
 echo "🔨 Building vid_mux image..."
-docker build -t vid_mux app/Vid_Mux/
+docker build -t vid_mux Vid_Mux/
 
 echo "🚀 Launching vid_mux..."
-mkdir -p app/snapshots
+mkdir -p snapshots
 docker run -d --name vid_mux --network=host \
   --device="${PHYSICAL_CAM}:/dev/video100" \
   --device=/dev/video200:/dev/video200 \
-  -v "${SCRIPT_DIR}/app/snapshots:/exports/snapshots" \
+  -v "${PROJECT_ROOT}/snapshots:/exports/snapshots" \
   vid_mux
 
 echo ""

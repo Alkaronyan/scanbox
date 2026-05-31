@@ -5,7 +5,7 @@ set -e
 # Canonical upstream repository and pinned ref for the loopback kernel module.
 # Pinning avoids surprise breakage against the host kernel ABI.
 V4L2LOOPBACK_REPO="https://github.com/umlaeute/v4l2loopback.git"
-V4L2LOOPBACK_REF="v0.13.2"
+V4L2LOOPBACK_REF="v0.15.3"
 
 echo "======================================================="
 echo "⚙️  Vid_Mux_TEST: Initializing Mocking Scaffold Engine"
@@ -65,7 +65,7 @@ if ! lsmod | grep -q "^v4l2loopback"; then
     # video_nr=200 forces the creation of /dev/video200 exclusively
     # card_label brands the device for easy visual identification
     # exclusive_caps=1 tricks GStreamer/Chrome into seeing it as a pure capture card
-    insmod v4l2loopback.ko video_nr=200 card_label="Scanbox_Virtual_Cam" exclusive_caps=1
+    insmod v4l2loopback.ko video_nr=200 card_label="Scanbox_Virtual_Cam" exclusive_caps=0
 else
     echo "ℹ️  v4l2loopback already loaded in the shared kernel; skipping insmod."
 fi
