@@ -1,69 +1,105 @@
 # SCANBOX - Dynamic Video Switcher Module
 
-A decoupled, deterministic video source switcher designed for embedded systems (Raspberry Pi CM4) running isolated within Docker containers. This module facilitates hot-swapping between physical hardware cameras and emulated testing streams via a REST API without breaking downstream video pipeline integrity.
+A decoupled, deterministic video source switcher designed for embedded systems (Raspberry Pi CM4) running isolated within Docker containers. Facilitates hot-swapping between physical hardware cameras and emulated testing streams via a REST API and web UI, without breaking downstream video pipeline integrity.
 
 ## Project Architecture
 
 ### Containerization Philosophy (Strict)
 
-Everything that *can* run inside a container *does* — both the production application and the test scaffold. The host OS is kept as clean as possible. Only the minimum that **must** live on the host kernel/OS is installed on it, and that minimum is fully automated by `setup_host.sh` and documented below. A fresh Raspberry Pi with nothing preinstalled must work after running that single script.
+Everything that *can* run inside a container *does*. The host OS is kept clean. Only the minimum that **must** live on the host is installed, fully automated by `setup_host.sh`.
 
-**Mandatory host-only requirements** (installed by `setup_host.sh`):
-* **Docker Engine** — the container runtime/platform.
-* **Kernel headers** (`linux-headers-*`) — required so the test container can compile `v4l2loopback` against the running host kernel and insert it into the shared kernel (the headers are mounted read-only into the container).
-* **git** — to clone/update this repository on the host.
+**Mandatory host-only requirements:**
+* **Docker Engine** — container runtime
+* **Kernel headers** (`linux-headers-*`) — for out-of-tree v4l2loopback compilation inside Vid_Mux_TEST
+* **git** — repository management
 
-Everything else (GStreamer, Python, `v4l-utils`, build toolchain, `v4l2loopback` sources, etc.) lives **inside the containers** and must never be installed on the host.
+Everything else (GStreamer, Python, build toolchain, v4l2loopback sources, etc.) lives inside containers.
 
----
+### Containers
 
-The system enforces strict sandboxing and separation of concerns by splitting the application logic from the testing infrastructure:
+* **Vid_Mux** — Production application. GStreamer input-selector pipeline, Flask REST API + Web UI, MJPEG HTTP stream. Ports: 5000 (API + UI + stream).
+* **Vid_Mux_TEST** — Development scaffold. Compiles and loads v4l2loopback into the shared kernel, feeds synthetic SMPTE pattern to /dev/video200. Discarded in production.
 
-* **Vid_Mux (Application Container):** The core production software. It ingests video inputs from static endpoints (/dev/video100 and /dev/video200), executes the GStreamer input-selector hot-swapping logic, handles snapshot actions, and exposes a JSON REST API on port 5000 for asynchronous signaling.
-* **Vid_Mux_TEST (Mocking Container):** The development scaffold. It dynamically injects the v4l2loopback driver into the shared kernel to instantiate a persistent high-index virtual node (/dev/video200) and feeds it a synthetic SMPTE test pattern with timestamp metadata.
+### Device Mapping
+
+| Internal path | Host source | Description |
+|---|---|---|
+| /dev/video100 | /dev/v4l/by-id/usb-046d_0809_5DD0F8C2-video-index0 | Physical USB camera (Logitech) |
+| /dev/video200 | /dev/video200 (created by Vid_Mux_TEST) | Synthetic mock camera |
 
 ## Repository Structure
 
-* app/Vid_Mux/ -> Production code, GStreamer engine, and Control API.
-* test/Vid_Mux_TEST/ -> Virtual camera loopback scaffold (Development only).
-* docs/ARCH_VID_MUX.md -> Detailed module behavior and contract.
-* docs/ARCH_VID_MUX_TEST_FRAMEWORK.md -> Testing schematic and execution metrics.
-* docs/RESTART_PROMPT.md -> Context template to resume LLM collaboration.
+```
+scanbox/
+├── app/
+│   ├── Vid_Mux/           # Production container
+│   │   ├── Dockerfile
+│   │   ├── entrypoint.sh
+│   │   ├── main.py        # Process entry point (single process, two threads)
+│   │   ├── switcher.py    # GStreamer pipeline + input-selector
+│   │   ├── api.py         # Flask REST API + MJPEG stream + Web UI
+│   │   ├── templates/
+│   │   │   └── index.html
+│   │   └── static/
+│   │       └── style.css
+│   └── snapshots/         # Bind-mounted snapshot storage (persists outside container)
+├── test/
+│   ├── Vid_Mux_TEST/      # Mock camera scaffold
+│   │   ├── Dockerfile
+│   │   ├── entrypoint.sh
+│   │   └── mock_streamer.py
+│   └── capture_test.sh    # Frame capture test tool
+├── docs/
+│   ├── ARCH_VID_MUX.md
+│   ├── ARCH_VID_MUX_TEST_FRAMEWORK.md
+│   └── RESTART_PROMPT.md  # LLM collaboration context
+├── setup_host.sh          # Host provisioning (run once)
+└── rebuild_vid_mux.sh     # Stop → rebuild → relaunch Vid_Mux
+```
 
 ## Quick Start
 
-### 1. Requirements
-* Raspberry Pi running Raspberry Pi OS / Debian (aarch64). **Nothing else preinstalled is assumed.**
-* VS Code with the Remote - SSH extension (for development).
-* A physical USB Webcam connected to the host.
-
-### 2. Host Provisioning (run once on a fresh Pi)
-Install the mandatory host-only dependencies (Docker + kernel headers + git):
+### 1. Host provisioning (fresh Pi, run once)
 ```bash
 sudo ./setup_host.sh
+newgrp docker
 ```
-Then log out and back in (or `newgrp docker`) so the docker group membership applies.
 
-### 3. Run the Test Scaffold (creates /dev/video200)
+### 2. Start the mock camera scaffold
 ```bash
 cd test/Vid_Mux_TEST
 docker build -t vid_mux_test .
-# Resolve the host's kbuild scripts dir (version-agnostic) and mount all three paths
 KBUILD_DIR="$(dirname "$(readlink -f /lib/modules/$(uname -r)/build/scripts)")"
-docker run --rm --privileged --network=host \
+docker run -d --name vid_mux_test --privileged --network=host \
   -v /lib/modules:/lib/modules:ro \
   -v /usr/src:/usr/src:ro \
   -v "${KBUILD_DIR}:${KBUILD_DIR}:ro" \
   vid_mux_test
 ```
-> Three host paths must be mounted to compile `v4l2loopback`, because of the kernel header symlink chain:
-> * `/lib/modules/<rel>/build` → `/usr/src/linux-headers-<rel>`
-> * `/usr/src/linux-headers-*/scripts` → `/usr/lib/linux-kbuild-<ver>/scripts`
->
-> So `/lib/modules`, `/usr/src`, **and** the `linux-kbuild` dir (resolved into `KBUILD_DIR`) are all required.
 
-### 4. Synchronization
-To verify and upload structural modifications to the remote repository, execute the standard Git workflow in your terminal:
-* git add .
-* git commit -m "chore: project infrastructure initialized"
-* git push origin main
+### 3. Build and run the production switcher
+```bash
+./rebuild_vid_mux.sh
+```
+
+### 4. Open the web UI
+Navigate to `http://<pi-ip>:5000` in any browser on the local network.
+
+## Web UI
+
+* **Live stream** — MJPEG stream embedded directly in the browser (no plugins needed)
+* **Source selector** — switch between cameras with click, Tab, or ← → keys
+* **Snapshot** — capture and display the last frame (Space key)
+* **Camera controls** — Pan/Tilt/Zoom/Focus panel (UI present, API pending)
+* **Keyboard shortcuts** — F1 to open reference modal
+
+## REST API (port 5000)
+
+| Method | Path | Description |
+|---|---|---|
+| GET | / | Web UI |
+| GET | /stream | Live MJPEG stream |
+| GET | /api/v1/status | Active source info |
+| POST | /api/v1/source | Switch source `{"source_id": 0\|1}` |
+| POST | /api/v1/snapshot | Capture frame to disk |
+| GET | /api/v1/snapshot/last | Retrieve last snapshot |
