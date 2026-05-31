@@ -2,6 +2,12 @@
 
 This document defines the technical architecture of the dynamic video source switching module for the SCANBOX project. The main goal is to allow hot-swapping between multiple V4L2 input sources, delivering a single unified output stream while isolating the business logic from both the user interface and the specific USB output hardware.
 
+> **Containerization rule:** Everything that can be containerized is. The host
+> only carries the mandatory runtime/kernel dependencies installed by
+> `setup_host.sh` (Docker Engine, kernel headers, git). Any new host-mandatory
+> requirement must be added to that script and documented here. See the README
+> for the full philosophy.
+
 ## 1. Core Component: Container 1 (SCANBOX Application)
 
 The application runs isolated inside a Docker container and consists of two concurrent execution threads that communicate via thread-safe memory mechanisms.
@@ -9,9 +15,10 @@ The application runs isolated inside a Docker container and consists of two conc
 ### A. Video Pipeline (GStreamer Pipeline)
 The processing engine uses GStreamer for low-level video capture, synchronization, and switching.
 
-*   **Input Nodes (Source Sinks):** 
-    *   `sink_0`: Bound to the real hardware device `/dev/video0`.
-    *   `sink_1`: Bound to the emulated test device `/dev/video10`.
+*   **Deterministic Input Mapping (Internal Sandboxing):**
+    To isolate the application from dynamic kernel device assignments on the host OS, inputs inside this container are explicitly mapped to high-index static endpoints to prevent conflicts with legacy devices:
+    *   `sink_0`: Bound to the internal static endpoint `/dev/video100`. At runtime, this is mapped externally to the physical camera's immutable hardware serial path located at `/dev/v4l/by-id/*`.
+    *   `sink_1`: Bound to the internal static endpoint `/dev/video200`. At runtime, this is linked to the fixed loopback node created by the testing scaffold.
 *   **Central Element:** `input-selector`. This GStreamer core node maintains clock buffer synchronization for both sources. It allows alternating the active input instantly without breaking the output stream (preventing End-of-Stream or connectivity drops).
 *   **Capture Element:** `valve` coupled with an image sink, used to extract frames on demand without stopping the pipeline.
 *   **Output Node:** Agnostic encapsulation. In the development phase, it emits via network protocol (RTP/UDP); in the production phase, it will be reconfigured toward the UVC Gadget V4L2 sink (`v4l2sink`).
