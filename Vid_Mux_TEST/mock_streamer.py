@@ -17,7 +17,7 @@ pipeline_str = (
     "video/x-raw,width=640,height=480,framerate=30/1 ! "
     "timeoverlay halignment=left valignment=bottom text=\"MOCK_CAM_200: \" shaded-background=true ! "
     "videoconvert ! "
-    "video/x-raw,format=YUY2 ! "
+    "video/x-raw,format=I420 ! "
     "v4l2sink device=/dev/video200"
 )
 

@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
-# tests/test_cameras.sh — Verify physical and mock cameras are accessible
-# and can produce a JPEG frame.
+# tests/test_cameras.sh — For each source reported by the API:
+#   - Verify device node inside vid_mux container (physical sources only)
+#   - Switch to the source via POST /api/v1/source
+#   - Capture a snapshot via POST /api/v1/snapshot
+#   - Verify the snapshot file exists and is larger than 5 KB
+#   - Restore source 0 at the end
 #
-# Dynamically scans /dev/v4l/by-id/*-video-index0 — no hardcoded camera IDs.
-# Uses a temporary debian:trixie container with GStreamer to capture a frame.
-#
-# Exit 0 = all checks passed.  Exit 1 = one or more checks failed.
+# Source list is read dynamically from GET /api/v1/status — no hardcoded IDs.
 
 set -euo pipefail
+
+API_BASE="${API_BASE:-http://localhost:5000}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SNAPSHOTS_DIR="${SCRIPT_DIR}/../snapshots"
+MIN_SNAP_BYTES=5120   # 5 KB
 
 PASS=0
 FAIL=0
@@ -16,90 +22,119 @@ pass() { echo "  PASS: $*"; PASS=$(( PASS + 1 )); }
 fail() { echo "  FAIL: $*"; FAIL=$(( FAIL + 1 )); }
 
 echo "========================================"
-echo "Camera Tests"
+echo "Camera Tests  (${API_BASE})"
 echo "========================================"
 
-# ── 1. Scan for physical cameras ─────────────────────────────────────────────
+# ── Fetch source list from API ────────────────────────────────────────────────
 echo ""
-echo "[1] Scanning /dev/v4l/by-id/ for physical cameras..."
-mapfile -t PHYSICAL_CAMS < <(ls /dev/v4l/by-id/*-video-index0 2>/dev/null || true)
-CAM_COUNT=${#PHYSICAL_CAMS[@]}
-
-echo "  Found ${CAM_COUNT} physical camera(s)."
-if [ "${CAM_COUNT}" -ge 1 ]; then
-    pass "At least one physical camera found"
-else
-    fail "No physical cameras found under /dev/v4l/by-id/*-video-index0"
+echo "[setup] Fetching source list from ${API_BASE}/api/v1/status..."
+STATUS_JSON="$(curl -s --max-time 5 "${API_BASE}/api/v1/status" 2>/dev/null || true)"
+if [ -z "${STATUS_JSON}" ]; then
+    echo "  FATAL: API unreachable at ${API_BASE}" >&2
+    exit 1
 fi
 
-# ── 2. Mock camera device ─────────────────────────────────────────────────────
-echo ""
-echo "[2] Checking for mock camera /dev/video200..."
-if [ -e /dev/video200 ]; then
-    pass "/dev/video200 exists (Vid_Mux_TEST mock camera)"
-else
-    fail "/dev/video200 not found — Vid_Mux_TEST container may not be running"
+# Parse sources into lines of "id|name|device"
+mapfile -t SOURCE_LINES < <(
+    echo "${STATUS_JSON}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for s in data.get('sources', []):
+    print('{id}|{name}|{device}'.format(
+        id=s['id'],
+        name=s.get('name', ''),
+        device=s.get('device', '')
+    ))"
+)
+
+SOURCE_COUNT=${#SOURCE_LINES[@]}
+if [ "${SOURCE_COUNT}" -eq 0 ]; then
+    echo "  FATAL: No sources returned by API." >&2
+    exit 1
 fi
+echo "  Found ${SOURCE_COUNT} source(s)."
 
-# ── 3. Capture a frame from each physical camera ──────────────────────────────
+# ── Test each source ──────────────────────────────────────────────────────────
 echo ""
-echo "[3] Capturing test frames from physical cameras..."
+echo "[1] Testing each source..."
 
-# If vid_mux is actively streaming, the uvcvideo driver won't allow a second
-# concurrent stream on the same device. In that case we infer the camera works
-# from the running stream rather than trying (and failing) to open it again.
-VID_MUX_RUNNING=false
-if docker inspect -f '{{.State.Running}}' vid_mux 2>/dev/null | grep -q "true"; then
-    VID_MUX_RUNNING=true
-fi
+for line in "${SOURCE_LINES[@]}"; do
+    IFS='|' read -r SRC_ID SRC_NAME SRC_DEVICE <<< "${line}"
+    echo ""
+    echo "  --- Source ${SRC_ID}: ${SRC_NAME} (device=${SRC_DEVICE:-none}) ---"
 
-for CAM_PATH in "${PHYSICAL_CAMS[@]}"; do
-    CAM_ID="$(basename "${CAM_PATH}")"
-    echo "  Testing: ${CAM_PATH}"
+    # 1a. Device node check inside vid_mux container.
+    #     Mock/synthetic sources have no physical device node — skip the check.
+    #     /dev/video200 is no longer mapped into vid_mux (videotestsrc is used
+    #     directly inside the pipeline), so skip that too.
+    if [ -n "${SRC_DEVICE}" ] && [ "${SRC_DEVICE}" != "/dev/video200" ]; then
+        if docker exec vid_mux test -e "${SRC_DEVICE}" 2>/dev/null; then
+            pass "Source ${SRC_ID}: ${SRC_DEVICE} exists inside vid_mux"
+        else
+            fail "Source ${SRC_ID}: ${SRC_DEVICE} NOT found inside vid_mux"
+        fi
+    else
+        pass "Source ${SRC_ID}: synthetic/mock — no physical device node expected inside container"
+    fi
 
-    if [ "${VID_MUX_RUNNING}" = "true" ]; then
-        # Camera is already proven working — vid_mux is streaming from it right now.
-        pass "Camera ${CAM_ID} in use by vid_mux (live stream active) — assumed working"
+    # 1b. Switch to this source
+    SWITCH_CODE="$(curl -s -o /dev/null -w "%{http_code}" \
+        -X POST -H "Content-Type: application/json" \
+        -d "{\"source_id\":${SRC_ID}}" \
+        "${API_BASE}/api/v1/source" 2>/dev/null || true)"
+    if [ "${SWITCH_CODE}" = "200" ]; then
+        pass "Source ${SRC_ID}: switch returned HTTP 200"
+    else
+        fail "Source ${SRC_ID}: switch returned HTTP ${SWITCH_CODE}"
         continue
     fi
 
-    TMPDIR_HOST="$(mktemp -d)"
-    # Pipeline: try native MJPEG capture first (most USB cams), then raw fallback.
-    CAPTURE_CMD="
-        DEBIAN_FRONTEND=noninteractive apt-get install -qq -y \
-            gstreamer1.0-tools gstreamer1.0-plugins-good >/dev/null 2>&1 &&
-        gst-launch-1.0 -q \
-            v4l2src device=/dev/testcam num-buffers=1 \
-            ! 'image/jpeg,width=640,height=480' \
-            ! filesink location=/out/frame.jpg 2>/dev/null ||
-        gst-launch-1.0 -q \
-            v4l2src device=/dev/testcam num-buffers=1 \
-            ! videoconvert ! jpegenc quality=85 \
-            ! filesink location=/out/frame.jpg
-    "
-    if docker run --rm \
-        --device="${CAM_PATH}:/dev/testcam" \
-        -v "${TMPDIR_HOST}:/out" \
-        debian:trixie bash -c "${CAPTURE_CMD}" 2>/dev/null; then
-        if [ -s "${TMPDIR_HOST}/frame.jpg" ]; then
-            pass "Captured frame from ${CAM_ID}"
+    # Brief pause for the pipeline to settle on the new source
+    sleep 1
+
+    # 1c. Request snapshot
+    SNAP_RESP="$(curl -s -X POST "${API_BASE}/api/v1/snapshot" 2>/dev/null || true)"
+    SNAP_STATUS="$(echo "${SNAP_RESP}" | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || true)"
+    SNAP_FILE="$(echo "${SNAP_RESP}"   | grep -o '"filename":"[^"]*"' | cut -d'"' -f4 || true)"
+
+    if [ "${SNAP_STATUS}" = "success" ] && [ -n "${SNAP_FILE}" ]; then
+        pass "Source ${SRC_ID}: snapshot returned success (${SNAP_FILE})"
+    else
+        fail "Source ${SRC_ID}: snapshot failed — response: ${SNAP_RESP}"
+        continue
+    fi
+
+    # 1d. Verify snapshot file exists on host and is larger than 5 KB
+    SNAP_PATH="${SNAPSHOTS_DIR}/${SNAP_FILE}"
+    if [ -f "${SNAP_PATH}" ]; then
+        SNAP_SIZE="$(stat -c %s "${SNAP_PATH}" 2>/dev/null || echo 0)"
+        if [ "${SNAP_SIZE}" -gt "${MIN_SNAP_BYTES}" ]; then
+            pass "Source ${SRC_ID}: snapshot is ${SNAP_SIZE} bytes (> 5 KB)"
         else
-            fail "Frame file empty for ${CAM_ID}"
+            fail "Source ${SRC_ID}: snapshot is only ${SNAP_SIZE} bytes (< 5 KB) — may be a blank frame"
         fi
     else
-        fail "GStreamer capture failed for ${CAM_ID}"
+        fail "Source ${SRC_ID}: snapshot file not found at ${SNAP_PATH}"
     fi
-    rm -rf "${TMPDIR_HOST}"
 done
 
-# ── 4. Summary ────────────────────────────────────────────────────────────────
+# ── Restore source 0 ──────────────────────────────────────────────────────────
+echo ""
+echo "[2] Restoring source 0..."
+RESTORE_CODE="$(curl -s -o /dev/null -w "%{http_code}" \
+    -X POST -H "Content-Type: application/json" \
+    -d '{"source_id":0}' \
+    "${API_BASE}/api/v1/source" 2>/dev/null || true)"
+if [ "${RESTORE_CODE}" = "200" ]; then
+    pass "Restored to source 0"
+else
+    fail "Failed to restore source 0 (HTTP ${RESTORE_CODE})"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "========================================"
-echo "Camera count : ${CAM_COUNT}"
 echo "PASS: ${PASS}  FAIL: ${FAIL}"
 echo "========================================"
 
-if [ "${FAIL}" -gt 0 ]; then
-    exit 1
-fi
-exit 0
+[ "${FAIL}" -eq 0 ]

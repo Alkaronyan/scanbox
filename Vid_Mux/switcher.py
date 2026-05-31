@@ -147,15 +147,20 @@ def _build_source_segment(source: dict, sink_index: int) -> str:
         return (
             f"videotestsrc pattern=smpte name=src{sink_index}\n"
             f"    ! video/x-raw,width=640,height=480,framerate=30/1,format=I420\n"
-            f"    ! queue name=q{sink_index} ! selector.sink_{sink_index}"
+            f"    ! queue name=q{sink_index} max-size-buffers=2 leaky=downstream ! selector.sink_{sink_index}"
         )
     elif is_mock:
-        # v4l2loopback mock camera: must use io-mode=rw (no MMAP support in v0.15.3)
+        # Mock camera: use videotestsrc directly inside the pipeline.
+        # Reading from /dev/video200 (v4l2loopback) via v4l2src fails because
+        # v4l2loopback rejects CAPTURE-side S_FMT while the OUTPUT side (mock_streamer)
+        # has the device open. videotestsrc bypasses this entirely.
         return (
-            f"v4l2src device={slot} name=src{sink_index} io-mode=rw\n"
+            f"videotestsrc pattern=colors name=src{sink_index}\n"
             f"    ! video/x-raw,width=640,height=480,framerate=30/1\n"
+            f"    ! timeoverlay halignment=left valignment=bottom"
+            f" text=\"MOCK: \" shaded-background=true\n"
             f"    ! videoconvert ! video/x-raw,format=I420\n"
-            f"    ! queue name=q{sink_index} ! selector.sink_{sink_index}"
+            f"    ! queue name=q{sink_index} max-size-buffers=2 leaky=downstream ! selector.sink_{sink_index}"
         )
     else:
         # Physical USB camera: outputs MJPEG natively
@@ -163,7 +168,7 @@ def _build_source_segment(source: dict, sink_index: int) -> str:
             f"v4l2src device={slot} name=src{sink_index}\n"
             f"    ! image/jpeg,width=640,height=480,framerate=30/1\n"
             f"    ! jpegdec ! videoconvert ! video/x-raw,format=I420\n"
-            f"    ! queue name=q{sink_index} ! selector.sink_{sink_index}"
+            f"    ! queue name=q{sink_index} max-size-buffers=2 leaky=downstream ! selector.sink_{sink_index}"
         )
 
 
@@ -181,8 +186,8 @@ def _build_pipeline_desc() -> str:
             # Replace "! selector.sink_0" with "! input-selector name=selector"
             # so the selector element is declared once at the first source
             seg = seg.replace(
-                "! queue name=q0 ! selector.sink_0",
-                "! queue name=q0 ! input-selector name=selector"
+                "! queue name=q0 max-size-buffers=2 leaky=downstream ! selector.sink_0",
+                "! queue name=q0 max-size-buffers=2 leaky=downstream ! input-selector name=selector sync-streams=false"
             )
         else:
             seg = _build_source_segment(source, i)

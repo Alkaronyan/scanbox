@@ -216,6 +216,11 @@ function renderControls(definitions, values) {
   body.innerHTML = '';
   _cameraDefaults = {};
 
+  if (!definitions || definitions.length === 0) {
+    body.innerHTML = '<p class="hint">No controls available for this source.</p>';
+    return;
+  }
+
   definitions.forEach(def => {
     const val      = values[def.name] ?? def.default;
     const inactive = def.inactive;
@@ -361,6 +366,7 @@ async function selectSource(id) {
   });
   activeId = id;
   renderSources();
+  loadControls();  // refresh controls for the new active source
   const src = sources.find(s => s.id === id);
   document.getElementById('status-source').textContent = src ? src.name : id;
 }

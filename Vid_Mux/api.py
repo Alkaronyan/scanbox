@@ -35,9 +35,17 @@ os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 _last_frame: bytes | None = None
 _last_frame_lock = threading.Lock()
 
-# PHYSICAL_DEVICE is used exclusively for V4L2 camera controls (brightness, contrast, etc.).
-# It always points to the first physical camera slot regardless of the active source.
-PHYSICAL_DEVICE = "/dev/video100"
+def _active_physical_device() -> str | None:
+    """Return the device path of the currently active source, or None if it has no real V4L2
+    controls (mock camera on /dev/video200, SMPTE fallback with no slot)."""
+    active_id = switcher.get_active_source()
+    source = next((s for s in SOURCES if s["id"] == active_id), None)
+    if source is None:
+        return None
+    device = source.get("device", "")
+    if not device or device == "/dev/video200":
+        return None
+    return device
 
 
 def _make_display_name(label: str) -> str:
@@ -190,9 +198,12 @@ def _query_camera_controls(device: str) -> tuple[list[dict], dict[str, int | Non
 
 
 def _set_ctrl(name: str, value: int) -> bool:
+    device = _active_physical_device()
+    if device is None:
+        return False
     try:
         r = subprocess.run(
-            ["v4l2-ctl", "-d", PHYSICAL_DEVICE, f"--set-ctrl={name}={value}"],
+            ["v4l2-ctl", "-d", device, f"--set-ctrl={name}={value}"],
             capture_output=True, text=True, timeout=3
         )
         return r.returncode == 0
@@ -305,8 +316,11 @@ def last_snapshot():
 
 @app.get("/api/v1/camera/controls")
 def get_controls():
-    """Return all V4L2 controls detected on the physical camera, with current values."""
-    defs, vals = _query_camera_controls(PHYSICAL_DEVICE)
+    """Return V4L2 controls for the currently active source. Empty if source has no controls."""
+    device = _active_physical_device()
+    if device is None:
+        return jsonify({"status": "ok", "controls": {}, "definitions": [], "message": "No controls for this source"})
+    defs, vals = _query_camera_controls(device)
     return jsonify({"status": "ok", "controls": vals, "definitions": defs})
 
 

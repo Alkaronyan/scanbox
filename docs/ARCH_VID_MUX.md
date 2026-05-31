@@ -18,7 +18,7 @@ The processing engine uses GStreamer for low-level video capture, synchronizatio
 *   **Deterministic Input Mapping (Internal Sandboxing):**
     To isolate the application from dynamic kernel device assignments on the host OS, inputs inside this container are explicitly mapped to high-index static endpoints to prevent conflicts with legacy devices:
     *   `sink_0`: Bound to the internal static endpoint `/dev/video100`. At runtime, this is mapped externally to the physical camera's immutable hardware serial path located at `/dev/v4l/by-id/*`.
-    *   `sink_1`: Bound to the internal static endpoint `/dev/video200`. At runtime, this is linked to the fixed loopback node created by the testing scaffold.
+    *   `sink_1`: Mock/synthetic source. Uses `videotestsrc pattern=colors` with a `timeoverlay` directly inside the pipeline — does **not** read from `/dev/video200` via v4l2src. v4l2loopback rejects CAPTURE-side `S_FMT` when the OUTPUT side (mock_streamer's v4l2sink) already has the device open, making v4l2src on `/dev/video200` unusable while Vid_Mux_TEST is running.
 *   **Central Element:** `input-selector`. This GStreamer core node maintains clock buffer synchronization for both sources. It allows alternating the active input instantly without breaking the output stream (preventing End-of-Stream or connectivity drops).
 *   **Capture Element:** `valve` coupled with an image sink, used to extract frames on demand without stopping the pipeline.
 *   **Output Node:** Agnostic encapsulation. In the development phase, it emits via network protocol (RTP/UDP); in the production phase, it will be reconfigured toward the UVC Gadget V4L2 sink (`v4l2sink`).

@@ -26,7 +26,7 @@ The following schematic represents the execution isolation, data pipelines, cont
 |   |                                                    ▼                                     |   |
 |   |   [ GStreamer Switcher Pipeline ]                                                        |   |
 |   |   sink_0 (Internal /dev/video100) ◄──(Mapped via /dev/v4l/by-id/* Unique Hardware ID)    |   |
-|   |   sink_1 (Internal /dev/video200) ◄──┘                                                   |   |
+|   |   sink_1 (videotestsrc, internal)  [mock source, no device read]                        |   |
 |   |               │                                                                          |   |
 |   |               ▼                                                                          |   |
 |   |       [ input-selector ] ──► [ Output Streamer ]                                         |   |
@@ -73,7 +73,7 @@ The following schematic represents the execution isolation, data pipelines, cont
 ### B. Main Application Container: `Vid_Mux`
 *   **Immutable Hardware Mapping:** The container engine maps the host's immutable path identifier to a sandboxed high index:
     `--device=/dev/v4l/by-id/[unique-usb-serial-string]:/dev/video100`
-*   **Virtual Interface Binding:** Maps the forced loopback interface: `--device=/dev/video200:/dev/video200`.
+*   **Mock source:** Vid_Mux does **not** map `/dev/video200` as a device. The mock GStreamer source uses `videotestsrc pattern=colors` + `timeoverlay` directly inside the pipeline. v4l2loopback rejects CAPTURE-side `S_FMT` from v4l2src while the OUTPUT side (Vid_Mux_TEST's v4l2sink) has the device open — this is a kernel driver constraint, not configurable. Vid_Mux_TEST still runs and keeps `/dev/video200` alive as a boot-readiness gate, but Vid_Mux never reads from it.
 
 ---
 
