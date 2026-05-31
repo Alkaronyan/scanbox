@@ -54,7 +54,8 @@ scanbox/
 │   └── capture_test.sh         # Single-frame capture test tool
 ├── systemd/
 │   ├── scanbox-gadget.service  # Configures USB NCM gadget before Docker starts
-│   └── scanbox-stack.service   # Runs docker compose up -d at boot (respects depends_on)
+│   ├── scanbox-stack.service   # Legacy: docker compose up -d (kept for reference)
+│   └── scanbox.service         # Boot orchestrator: calls rebuild_vid_mux.sh (dynamic cameras)
 ├── tests/
 │   ├── run_all.sh              # Run all suites, print summary table
 │   ├── test_cameras.sh         # Camera detection + GStreamer frame capture
@@ -92,16 +93,61 @@ Vid_Mux production container fully operational.
 * GET  /api/v1/camera/controls    → current V4L2 control values
 * POST /api/v1/camera/control     → {"control": "saturation", "value": 128}
 
-**V4L2 controls available on Logitech C270:**
-brightness(0-255), contrast(0-255), saturation(0-255), sharpness(0-255),
-gain(0-255), backlight_compensation(0-1), auto_exposure(1=manual/3=auto),
-exposure_time_absolute(1-10000, active only in manual mode)
+**V4L2 camera controls — fully dynamic (camera-agnostic):**
+* `GET /api/v1/camera/controls` runs `v4l2-ctl -d /dev/video100 --list-ctrls-menus` at request time
+* Response: `{"status":"ok","controls":{name:value,...},"definitions":[{name,label,type,min,max,step,default,inactive,options?},...]}`
+* `_parse_v4l2_output()` in api.py parses the v4l2-ctl text: handles int/bool/menu types, inactive flag, menu option tables
+* `_CTRL_LABELS` dict maps 17 known V4L2 control names to human-readable labels; unknown controls use title-cased name
+* Web UI Camera Config section is rendered entirely from the API response by `renderControls(definitions, values)`:
+  - int with range > 1 → slider with live value label
+  - bool or binary int (0/1) → Off/On two-button toggle
+  - menu → multi-button toggle group from options dict
+  - inactive controls are visually dimmed and disabled
+  - `↺ Reset to defaults` button resets all controls to their v4l2 default values
+* Works with any V4L2-compatible camera — no hardcoded control list
 
 **Rebuild script:** ./scripts/rebuild_vid_mux.sh (from project root)
 **Snapshots:** /home/Alfred/scanbox/snapshots/ (bind-mounted)
 
 **Web UI keyboard shortcuts:**
 Space=snapshot | Tab/←/→=cycle sources | Q/E=focus(fake) | Scroll=zoom(fake) | F1=shortcuts modal
+
+### Dynamic Multi-Camera Support — COMPLETED ✅
+
+**SCANBOX_SOURCES env var** — passed by `scripts/rebuild_vid_mux.sh` to the container at runtime:
+```json
+[
+  {"id": 0, "slot": "/dev/video100", "label": "usb-046d_0809_5DD0F8C2"},
+  {"id": 1, "slot": "/dev/video101", "label": "usb-046d_HD_Pro_Webcam_C920"},
+  {"id": 2, "slot": "/dev/video200", "label": "mock"}
+]
+```
+- Physical cameras: slots `/dev/video100` → `/dev/video103` (in discovery order from `/dev/v4l/by-id/*-video-index0`)
+- Mock camera: always `/dev/video200`, always last entry
+- If env var is absent or invalid: fallback to auto-detect `video100` + `video200` (original hardcoded behaviour)
+
+**Camera env file** written to `/tmp/scanbox_cameras.env` on each run of rebuild_vid_mux.sh:
+```
+CAMERA_COUNT=2
+CAMERA_0_DEVICE=/dev/v4l/by-id/usb-046d_0809_5DD0F8C2-video-index0
+CAMERA_0_SLOT=/dev/video100
+CAMERA_0_LABEL=usb-046d_0809_5DD0F8C2
+CAMERA_1_DEVICE=...
+CAMERA_1_SLOT=/dev/video101
+CAMERA_1_LABEL=...
+MOCK_CAMERA=/dev/video200
+SCANBOX_SOURCES=[...]
+```
+
+**Key files changed:**
+* `scripts/rebuild_vid_mux.sh` — scans all `/dev/v4l/by-id/*-video-index0`, builds `--device` flags, builds and passes `SCANBOX_SOURCES`
+* `Vid_Mux/switcher.py` — reads `SCANBOX_SOURCES`, builds GStreamer pipeline dynamically (N physical + mock); physical cams use MJPEG caps + jpegdec; mock uses `io-mode=rw`
+* `Vid_Mux/api.py` — `SOURCES` list built from `SCANBOX_SOURCES`; display names derived from labels
+* `docker-compose.yml` — includes hardcoded `SCANBOX_SOURCES` default for single-camera boot; see comment about `rebuild_vid_mux.sh` for multi-camera
+
+**Note on docker-compose vs rebuild_vid_mux.sh:**
+- `docker compose up -d` (boot automation): uses the static `SCANBOX_SOURCES` in `docker-compose.yml` — works for the standard 1-physical + 1-mock setup
+- `./scripts/rebuild_vid_mux.sh` (manual / multi-camera): dynamically detects all cameras, assigns slots, builds correct `--device` flags — use this when you have 2+ physical cameras or a different camera attached
 
 ### Phase 3 — COMPLETED ✅
 USB NCM gadget + DHCP + full boot automation fully operational.
@@ -114,24 +160,28 @@ USB NCM gadget + DHCP + full boot automation fully operational.
 **Boot sequence (fully automatic):**
 ```
 1. scanbox-gadget.service  → loads libcomposite + usb_f_ncm, creates NCM gadget, assigns 192.168.55.1 to usb0
-2. scanbox-stack.service   → docker compose up -d  (after docker.service)
-   ├── scanbox_dhcp         → starts immediately, dnsmasq listens on usb0
-   ├── vid_mux_test         → starts immediately, compiles v4l2loopback (~60s first boot), creates /dev/video200
-   │    └── healthcheck: ps | grep mock_streamer → waits until healthy
-   └── vid_mux              → waits for vid_mux_test healthy → starts with video200 mapped
+2. scanbox.service         → runs scripts/rebuild_vid_mux.sh (after docker.service)
+   ├── scanbox_dhcp         → started if not running; dnsmasq listens on usb0
+   ├── vid_mux_test         → started if not healthy; compiles v4l2loopback (~60-90s first boot)
+   │    └── waits for /dev/video200 (polls every 2s, 120s timeout)
+   └── vid_mux              → built and launched with dynamically detected cameras
 ```
+
+**systemd/scanbox.service** — primary boot orchestrator (replaces scanbox-stack.service):
+* `Type=simple`, `Restart=on-failure`, `RestartSec=10s`
+* Calls `scripts/rebuild_vid_mux.sh` which handles the full stack lifecycle
+* Key advantage over `docker compose up -d`: detects cameras dynamically at every boot
 
 **Host-only exceptions (cannot be containerized):**
 * scripts/setup_usb_gadget.sh — requires direct kernel configfs access
 * systemd/scanbox-gadget.service — must run before Docker daemon
-* systemd/scanbox-stack.service — orchestrates docker compose startup order
-* .env — machine-specific KBUILD_DIR for docker-compose volume mount
+* systemd/scanbox.service — boot orchestrator, calls rebuild_vid_mux.sh
+* .env — machine-specific KBUILD_DIR for kernel module compilation
 
 **Initial setup (fresh Pi):**
 ```bash
 sudo ./scripts/setup_host.sh   # installs Docker, kernel headers, systemd services, generates .env
-# reboot
-docker compose build            # builds all 3 images (only needed once or after code changes)
+# reboot — everything starts automatically
 ```
 
 After reboot everything starts automatically. No manual intervention needed.

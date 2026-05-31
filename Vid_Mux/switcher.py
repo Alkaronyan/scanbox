@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # switcher.py — GStreamer video switcher pipeline for Vid_Mux.
 #
-# Reads from two V4L2 sources simultaneously:
-#   sink_0: /dev/video100 (physical USB camera)
-#   sink_1: /dev/video200 (synthetic mock camera from Vid_Mux_TEST)
+# Reads from N V4L2 sources simultaneously (determined by SCANBOX_SOURCES env var).
+# Physical cameras use MJPEG capture format; mock camera (/dev/video200) uses io-mode=rw.
 #
 # Uses GStreamer input-selector to hot-swap between sources without
 # interrupting the output stream.
@@ -12,6 +11,8 @@
 # api.py to serve a live MJPEG stream over HTTP (/stream).
 
 import gi
+import os
+import json
 import threading
 import queue
 import logging
@@ -28,10 +29,52 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Source list — loaded from SCANBOX_SOURCES env var at module load time.
+# Falls back to auto-detection if env var is missing or invalid.
+# Each entry: {"id": int, "slot": "/dev/videoN", "label": str}
+# ---------------------------------------------------------------------------
+
+def _load_sources() -> list[dict]:
+    """Parse SCANBOX_SOURCES env var or fall back to auto-detection."""
+    raw = os.environ.get("SCANBOX_SOURCES", "")
+    if raw:
+        try:
+            sources = json.loads(raw)
+            if isinstance(sources, list) and len(sources) > 0:
+                log.info("Loaded %d source(s) from SCANBOX_SOURCES.", len(sources))
+                for s in sources:
+                    log.info("  id=%d  slot=%s  label=%s", s["id"], s["slot"], s["label"])
+                return sources
+        except (json.JSONDecodeError, KeyError) as e:
+            log.warning("SCANBOX_SOURCES parse error (%s) — falling back to auto-detection.", e)
+
+    # Auto-detection fallback: video100 mandatory, video200 optional
+    log.warning("SCANBOX_SOURCES not set or invalid — auto-detecting devices.")
+    sources = []
+    if os.path.exists("/dev/video100"):
+        sources.append({"id": 0, "slot": "/dev/video100", "label": "video100"})
+    else:
+        log.error("Auto-detection: /dev/video100 not found — cannot build pipeline.")
+        sys.exit(1)
+
+    if os.path.exists("/dev/video200"):
+        log.info("Auto-detection: video200 present — including mock source.")
+        sources.append({"id": 1, "slot": "/dev/video200", "label": "mock"})
+    else:
+        log.warning("Auto-detection: video200 not found — using SMPTE videotestsrc fallback.")
+        sources.append({"id": 1, "slot": None, "label": "mock"})  # slot=None → SMPTE fallback
+
+    return sources
+
+
+SOURCES: list[dict] = _load_sources()
+VALID_IDS: set[int] = {s["id"] for s in SOURCES}
+
+# ---------------------------------------------------------------------------
 # Shared state
 # ---------------------------------------------------------------------------
 _lock           = threading.Lock()
-_active_source  = 0
+_active_source  = SOURCES[0]["id"] if SOURCES else 0
 _selector_el    = None
 
 # Frame queue — api.py reads from this to serve the MJPEG stream.
@@ -44,8 +87,8 @@ frame_queue: queue.Queue = queue.Queue(maxsize=2)
 
 def switch_source(source_id: int) -> bool:
     global _active_source
-    if source_id not in (0, 1):
-        log.error("Invalid source_id %s", source_id)
+    if source_id not in VALID_IDS:
+        log.error("Invalid source_id %s (valid: %s)", source_id, sorted(VALID_IDS))
         return False
     with _lock:
         if _selector_el is None:
@@ -88,46 +131,72 @@ def _on_new_sample(appsink):
     return Gst.FlowReturn.OK
 
 # ---------------------------------------------------------------------------
-# Pipeline
+# Pipeline building
 # ---------------------------------------------------------------------------
 
-_PIPELINE_SRC1_REAL = """
-    v4l2src device=/dev/video200 name=src1 io-mode=rw
-        ! video/x-raw,width=640,height=480,framerate=30/1
-        ! videoconvert ! video/x-raw,format=I420
-        ! queue name=q1 ! selector.sink_1
-"""
+def _build_source_segment(source: dict, sink_index: int) -> str:
+    """Return the GStreamer pipeline fragment for one source."""
+    slot = source.get("slot")
+    label = source.get("label", "")
 
-# Fallback used in production when /dev/video200 is absent (vid_mux_test not running).
-# videotestsrc generates a synthetic SMPTE colour-bar pattern so the two-source
-# switching UI remains functional without a real second device.
-_PIPELINE_SRC1_MOCK = """
-    videotestsrc pattern=smpte name=src1
-        ! video/x-raw,width=640,height=480,framerate=30/1,format=I420
-        ! queue name=q1 ! selector.sink_1
-"""
+    # Determine if this is the mock loopback device
+    is_mock = (slot == "/dev/video200") or (label == "mock")
 
-_PIPELINE_TEMPLATE = """
-    v4l2src device=/dev/video100 name=src0
-        ! image/jpeg,width=640,height=480,framerate=30/1
-        ! jpegdec ! videoconvert ! video/x-raw,format=I420
-        ! queue name=q0 ! input-selector name=selector
+    if slot is None:
+        # SMPTE videotestsrc fallback (used when video200 is absent in fallback mode)
+        return (
+            f"videotestsrc pattern=smpte name=src{sink_index}\n"
+            f"    ! video/x-raw,width=640,height=480,framerate=30/1,format=I420\n"
+            f"    ! queue name=q{sink_index} ! selector.sink_{sink_index}"
+        )
+    elif is_mock:
+        # v4l2loopback mock camera: must use io-mode=rw (no MMAP support in v0.15.3)
+        return (
+            f"v4l2src device={slot} name=src{sink_index} io-mode=rw\n"
+            f"    ! video/x-raw,width=640,height=480,framerate=30/1\n"
+            f"    ! videoconvert ! video/x-raw,format=I420\n"
+            f"    ! queue name=q{sink_index} ! selector.sink_{sink_index}"
+        )
+    else:
+        # Physical USB camera: outputs MJPEG natively
+        return (
+            f"v4l2src device={slot} name=src{sink_index}\n"
+            f"    ! image/jpeg,width=640,height=480,framerate=30/1\n"
+            f"    ! jpegdec ! videoconvert ! video/x-raw,format=I420\n"
+            f"    ! queue name=q{sink_index} ! selector.sink_{sink_index}"
+        )
 
-    {src1}
-
-    selector.
-        ! jpegenc quality=85
-        ! appsink name=output emit-signals=true max-buffers=2 drop=true sync=false
-"""
-
-import os as _os
 
 def _build_pipeline_desc() -> str:
-    if _os.path.exists("/dev/video200"):
-        log.info("video200 present — using real mock source (Vid_Mux_TEST).")
-        return _PIPELINE_TEMPLATE.format(src1=_PIPELINE_SRC1_REAL)
-    log.warning("video200 not found — falling back to synthetic SMPTE source for sink_1.")
-    return _PIPELINE_TEMPLATE.format(src1=_PIPELINE_SRC1_MOCK)
+    """Build the full GStreamer pipeline string from the SOURCES list."""
+    if not SOURCES:
+        log.error("No sources defined — cannot build pipeline.")
+        sys.exit(1)
+
+    segments = []
+    for i, source in enumerate(SOURCES):
+        # First source feeds into the input-selector definition
+        if i == 0:
+            seg = _build_source_segment(source, 0)
+            # Replace "! selector.sink_0" with "! input-selector name=selector"
+            # so the selector element is declared once at the first source
+            seg = seg.replace(
+                "! queue name=q0 ! selector.sink_0",
+                "! queue name=q0 ! input-selector name=selector"
+            )
+        else:
+            seg = _build_source_segment(source, i)
+        segments.append(seg)
+
+    output = (
+        "selector.\n"
+        "    ! jpegenc quality=85\n"
+        "    ! appsink name=output emit-signals=true max-buffers=2 drop=true sync=false"
+    )
+
+    pipeline = "\n\n".join(segments) + "\n\n" + output
+    log.info("Pipeline description:\n%s", pipeline)
+    return pipeline
 
 # ---------------------------------------------------------------------------
 # Main loop
@@ -148,7 +217,7 @@ def run():
     global _selector_el
 
     Gst.init(None)
-    log.info("Building GStreamer pipeline...")
+    log.info("Building GStreamer pipeline (%d source(s))...", len(SOURCES))
 
     pipeline = Gst.parse_launch(_build_pipeline_desc())
 
@@ -157,7 +226,7 @@ def run():
         log.error("input-selector not found in pipeline.")
         sys.exit(1)
 
-    # Set initial pad to sink_0 (physical camera)
+    # Set initial pad to sink_0 (first source, typically physical camera)
     pipeline.set_state(Gst.State.READY)
     initial_pad = _selector_el.get_static_pad("sink_0")
     _selector_el.set_property("active-pad", initial_pad)

@@ -1,35 +1,208 @@
 #!/bin/bash
-# rebuild_vid_mux.sh — Stop, rebuild, and relaunch the Vid_Mux container.
-# Run from the scanbox project root: ./rebuild_vid_mux.sh
+# rebuild_vid_mux.sh — Start/rebuild the full SCANBOX container stack.
+#
+# Boot flow (called by systemd/scanbox.service):
+#   1. Start scanbox_dhcp (DHCP for USB NCM link) — skip if already running
+#   2. Start vid_mux_test (mock camera scaffold) — skip if already healthy
+#   3. Wait for /dev/video200 to appear (up to 120s)
+#   4. Detect all physical cameras under /dev/v4l/by-id/
+#   5. Stop, rebuild, and relaunch vid_mux with dynamic SCANBOX_SOURCES
+#
+# Also used manually to pick up new cameras or rebuild after code changes.
+# Run from the scanbox project root: ./scripts/rebuild_vid_mux.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Operate from the project root (one level above scripts/)
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
-PHYSICAL_CAM="$(ls /dev/v4l/by-id/*-video-index0 2>/dev/null | head -n1)"
-if [[ -z "${PHYSICAL_CAM}" ]]; then
-  echo "❌ No physical camera found under /dev/v4l/by-id/" >&2
-  exit 1
+# ── Helper: check if a container is running ──────────────────────────────────
+container_running() {
+    local name="$1"
+    [[ "$(docker inspect -f '{{.State.Running}}' "${name}" 2>/dev/null)" == "true" ]]
+}
+
+# ── Helper: check if a container's healthcheck is healthy ────────────────────
+container_healthy() {
+    local name="$1"
+    [[ "$(docker inspect -f '{{.State.Health.Status}}' "${name}" 2>/dev/null)" == "healthy" ]]
+}
+
+# ── Helper: ensure an image exists (build if not) ────────────────────────────
+ensure_image() {
+    local tag="$1"
+    local context="$2"
+    if ! docker image inspect "${tag}" &>/dev/null; then
+        echo "Building image ${tag}..."
+        docker build -t "${tag}" "${context}"
+    fi
+}
+
+echo "========================================"
+echo "SCANBOX Stack Startup"
+echo "========================================"
+
+# ── 1. scanbox_dhcp ───────────────────────────────────────────────────────────
+echo ""
+echo "[1] scanbox_dhcp (DHCP server)"
+if container_running scanbox_dhcp; then
+    echo "  Already running — skipping."
+else
+    ensure_image scanbox-scanbox_dhcp scanbox_dhcp/
+    docker rm -f scanbox_dhcp 2>/dev/null || true
+    docker run -d --name scanbox_dhcp --network=host --cap-add=NET_ADMIN \
+        --restart=always scanbox-scanbox_dhcp
+    echo "  Started."
 fi
 
-echo "🛑 Stopping and removing vid_mux..."
-docker rm -f vid_mux 2>/dev/null || true
+# ── 2. vid_mux_test ───────────────────────────────────────────────────────────
+echo ""
+echo "[2] vid_mux_test (mock camera scaffold)"
+if container_healthy vid_mux_test; then
+    echo "  Already healthy — skipping."
+else
+    ensure_image scanbox-vid_mux_test Vid_Mux_TEST/
+    docker rm -f vid_mux_test 2>/dev/null || true
 
-echo "🔨 Building vid_mux image..."
-docker build -t vid_mux Vid_Mux/
+    # KBUILD_DIR must be passed in for v4l2loopback to compile against the host kernel.
+    if [[ -f "${PROJECT_ROOT}/.env" ]]; then
+        KBUILD_DIR="$(grep '^KBUILD_DIR=' "${PROJECT_ROOT}/.env" | cut -d= -f2-)"
+    else
+        KBUILD_DIR="$(ls -d /usr/lib/linux-kbuild-* 2>/dev/null | head -1)"
+    fi
 
-echo "🚀 Launching vid_mux..."
-mkdir -p snapshots
-docker run -d --name vid_mux --network=host \
-  --device="${PHYSICAL_CAM}:/dev/video100" \
-  --device=/dev/video200:/dev/video200 \
-  -v "${PROJECT_ROOT}/snapshots:/exports/snapshots" \
-  vid_mux
+    if [[ -z "${KBUILD_DIR}" ]]; then
+        echo "ERROR: Cannot determine KBUILD_DIR. Run sudo ./scripts/setup_host.sh first." >&2
+        exit 1
+    fi
+
+    echo "  KBUILD_DIR=${KBUILD_DIR}"
+    docker run -d --name vid_mux_test --network=host --privileged \
+        --restart=always \
+        -v /lib/modules:/lib/modules:ro \
+        -v /usr/src:/usr/src:ro \
+        -v "${KBUILD_DIR}:${KBUILD_DIR}:ro" \
+        scanbox-vid_mux_test
+    echo "  Started — waiting for mock camera (/dev/video200)..."
+fi
+
+# ── 3. Wait for /dev/video200 ─────────────────────────────────────────────────
+echo ""
+echo "[3] Waiting for /dev/video200 (mock camera)"
+TIMEOUT=120
+ELAPSED=0
+while [[ ! -e /dev/video200 ]]; do
+    if [[ "${ELAPSED}" -ge "${TIMEOUT}" ]]; then
+        echo "ERROR: /dev/video200 did not appear after ${TIMEOUT}s." >&2
+        echo "       Check: docker logs vid_mux_test" >&2
+        exit 1
+    fi
+    sleep 2
+    ELAPSED=$(( ELAPSED + 2 ))
+    echo "  ...${ELAPSED}s"
+done
+echo "  /dev/video200 is present."
+
+# ── 4. Scan ALL physical cameras ─────────────────────────────────────────────
+echo ""
+echo "[4] Camera Discovery"
+echo "========================================"
+mapfile -t PHYSICAL_CAMS < <(ls /dev/v4l/by-id/*-video-index0 2>/dev/null || true)
+PHYSICAL_COUNT=${#PHYSICAL_CAMS[@]}
+
+echo "  Physical cameras found: ${PHYSICAL_COUNT}"
+for i in "${!PHYSICAL_CAMS[@]}"; do
+    echo "    [${i}] ${PHYSICAL_CAMS[${i}]}"
+done
+
+MOCK_EXISTS=false
+if [[ -e /dev/video200 ]]; then
+    MOCK_EXISTS=true
+    echo "  Mock camera: /dev/video200 present"
+fi
+echo "========================================"
+
+if [[ "${PHYSICAL_COUNT}" -eq 0 ]] && [[ "${MOCK_EXISTS}" = "false" ]]; then
+    echo "ERROR: No video sources found. Cannot start vid_mux." >&2
+    exit 1
+fi
+if [[ "${PHYSICAL_COUNT}" -eq 0 ]]; then
+    echo "WARNING: No physical cameras found — launching with mock camera only." >&2
+fi
+
+# Cap at 4 physical camera slots (video100..video103)
+MAX_PHYSICAL=4
+if [[ "${PHYSICAL_COUNT}" -gt "${MAX_PHYSICAL}" ]]; then
+    echo "WARNING: ${PHYSICAL_COUNT} cameras found, only using first ${MAX_PHYSICAL}." >&2
+    PHYSICAL_COUNT=${MAX_PHYSICAL}
+fi
+
+# ── 5. Build --device flags and SCANBOX_SOURCES JSON ─────────────────────────
+DEVICE_FLAGS=()
+SOURCES_JSON="["
+SLOT_BASE=100
+SOURCE_ID=0
+
+for (( i=0; i<PHYSICAL_COUNT; i++ )); do
+    CAM_PATH="${PHYSICAL_CAMS[${i}]}"
+    SLOT_NUM=$(( SLOT_BASE + i ))
+    SLOT_DEV="/dev/video${SLOT_NUM}"
+    CAM_LABEL="$(basename "${CAM_PATH}" | sed 's/-video-index0$//')"
+
+    DEVICE_FLAGS+=("--device=${CAM_PATH}:${SLOT_DEV}")
+
+    [[ "${SOURCE_ID}" -gt 0 ]] && SOURCES_JSON+=","
+    SAFE_LABEL="${CAM_LABEL//\"/\\\"}"
+    SOURCES_JSON+="{\"id\":${SOURCE_ID},\"slot\":\"${SLOT_DEV}\",\"label\":\"${SAFE_LABEL}\"}"
+    SOURCE_ID=$(( SOURCE_ID + 1 ))
+done
+
+if [[ "${MOCK_EXISTS}" = "true" ]]; then
+    DEVICE_FLAGS+=("--device=/dev/video200:/dev/video200")
+    [[ "${SOURCE_ID}" -gt 0 ]] && SOURCES_JSON+=","
+    SOURCES_JSON+="{\"id\":${SOURCE_ID},\"slot\":\"/dev/video200\",\"label\":\"mock\"}"
+fi
+
+SOURCES_JSON+="]"
+
+# Write camera env file for external scripts/tests
+{
+    echo "CAMERA_COUNT=${PHYSICAL_COUNT}"
+    for (( i=0; i<PHYSICAL_COUNT; i++ )); do
+        SLOT_NUM=$(( SLOT_BASE + i ))
+        CAM_LABEL_I="$(basename "${PHYSICAL_CAMS[${i}]}" | sed 's/-video-index0$//')"
+        echo "CAMERA_${i}_DEVICE=${PHYSICAL_CAMS[${i}]}"
+        echo "CAMERA_${i}_SLOT=/dev/video${SLOT_NUM}"
+        echo "CAMERA_${i}_LABEL=${CAM_LABEL_I}"
+    done
+    [[ "${MOCK_EXISTS}" = "true" ]] && echo "MOCK_CAMERA=/dev/video200"
+    echo "SCANBOX_SOURCES=${SOURCES_JSON}"
+} > /tmp/scanbox_cameras.env
 
 echo ""
-echo "✅ vid_mux running."
-echo "   Web UI  → http://$(hostname -I | awk '{print $1}'):5000"
-echo "   Stream  → tcp://$(hostname -I | awk '{print $1}'):9000"
+echo "SCANBOX_SOURCES=${SOURCES_JSON}"
+
+# ── 6. Stop, rebuild, and relaunch vid_mux ───────────────────────────────────
+echo ""
+echo "[5] vid_mux (video switcher)"
+docker rm -f vid_mux 2>/dev/null || true
+
+echo "  Building vid_mux image..."
+docker build -t vid_mux Vid_Mux/
+
+echo "  Launching vid_mux..."
+mkdir -p snapshots
+
+docker run -d --name vid_mux --network=host \
+    "${DEVICE_FLAGS[@]}" \
+    -e SCANBOX_SOURCES="${SOURCES_JSON}" \
+    -v "${PROJECT_ROOT}/snapshots:/exports/snapshots" \
+    vid_mux
+
+echo ""
+echo "========================================"
+echo "SCANBOX stack running."
+echo "  Sources : ${SOURCES_JSON}"
+echo "  Web UI  → http://$(hostname -I | awk '{print $1}'):5000"
+echo "========================================"

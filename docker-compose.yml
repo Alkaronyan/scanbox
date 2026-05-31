@@ -42,6 +42,19 @@ services:
   # Production video switcher.
   # Flask REST API + MJPEG stream on port 5000 (host network).
   # Waits for vid_mux_test to be healthy (video200 exists) before starting.
+  #
+  # MULTI-CAMERA NOTE:
+  #   For dynamic multi-camera support (1-4 physical cameras), use:
+  #     ./scripts/rebuild_vid_mux.sh
+  #   That script auto-detects all /dev/v4l/by-id/*-video-index0 devices,
+  #   assigns slots video100-video103, builds SCANBOX_SOURCES JSON, and
+  #   passes it as an env var to the container with the correct --device flags.
+  #
+  #   This compose file is intentionally simplified for boot automation:
+  #   it starts vid_mux with one hardcoded physical camera (video100) so
+  #   that `docker compose up -d` works at boot without knowing which cameras
+  #   are connected. The SCANBOX_SOURCES default below covers the single-camera
+  #   + mock-camera case that is the common production configuration.
   # ─────────────────────────────────────────────────────────────────────────
   vid_mux:
     build: ./Vid_Mux
@@ -49,10 +62,15 @@ services:
     restart: on-failure
     network_mode: host
     devices:
-      # Physical camera — deterministic by-id path (never changes)
+      # Physical camera — deterministic by-id path (never changes).
+      # NOTE: For multi-camera setups use scripts/rebuild_vid_mux.sh instead.
       - /dev/v4l/by-id/usb-046d_0809_5DD0F8C2-video-index0:/dev/video100
       # Mock camera — created by vid_mux_test above
       - /dev/video200:/dev/video200
+    environment:
+      # Default single-camera + mock source definition.
+      # rebuild_vid_mux.sh overrides this at runtime for multi-camera setups.
+      SCANBOX_SOURCES: '[{"id":0,"slot":"/dev/video100","label":"usb-046d_0809_5DD0F8C2"},{"id":1,"slot":"/dev/video200","label":"mock"}]'
     volumes:
       - ./snapshots:/exports/snapshots
     depends_on:

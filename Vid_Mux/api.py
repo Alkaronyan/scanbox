@@ -12,6 +12,7 @@
 #   POST /api/v1/camera/control     — Set a V4L2 control value
 
 import os
+import json
 import glob
 import datetime
 import logging
@@ -34,45 +35,158 @@ os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 _last_frame: bytes | None = None
 _last_frame_lock = threading.Lock()
 
+# PHYSICAL_DEVICE is used exclusively for V4L2 camera controls (brightness, contrast, etc.).
+# It always points to the first physical camera slot regardless of the active source.
 PHYSICAL_DEVICE = "/dev/video100"
 
-# Camera source definitions — extend as new sources are added.
-SOURCES = [
-    {"id": 0, "name": "Physical Camera", "device": "/dev/video100"},
-    {"id": 1, "name": "Mock Camera",     "device": "/dev/video200"},
-]
 
-# V4L2 controls exposed in the UI.
-# type: int | bool | menu
-# depends_on: control that must have a specific value to enable this one
-CAMERA_CONTROLS = [
-    {"name": "brightness",              "label": "Brightness",            "type": "int",  "min": 0,   "max": 255,   "default": 128},
-    {"name": "contrast",                "label": "Contrast",              "type": "int",  "min": 0,   "max": 255,   "default": 32},
-    {"name": "saturation",              "label": "Saturation",            "type": "int",  "min": 0,   "max": 255,   "default": 28},
-    {"name": "sharpness",               "label": "Sharpness",             "type": "int",  "min": 0,   "max": 255,   "default": 191},
-    {"name": "gain",                    "label": "Gain",                  "type": "int",  "min": 0,   "max": 255,   "default": 0},
-    {"name": "backlight_compensation",  "label": "Backlight Compensation","type": "bool", "min": 0,   "max": 1,     "default": 1},
-    {"name": "auto_exposure",           "label": "Auto Exposure",         "type": "menu",
-     "options": {1: "Manual Mode", 3: "Aperture Priority (Auto)"}, "default": 3},
-    {"name": "exposure_time_absolute",  "label": "Exposure",              "type": "int",  "min": 1,   "max": 10000, "default": 166,
-     "depends_on": {"control": "auto_exposure", "value": 1}},
-]
+def _make_display_name(label: str) -> str:
+    """Derive a human-readable display name from a source label."""
+    if label == "mock":
+        return "Mock Camera"
+    # Physical cameras carry their by-id label, e.g. "usb-046d_0809_5DD0F8C2"
+    # Strip common prefixes to make them more readable in the UI.
+    name = label.replace("usb-", "").replace("_", " ").strip()
+    return name if name else label
+
+
+def _build_sources_list() -> list[dict]:
+    """
+    Build the SOURCES list for the API from the SCANBOX_SOURCES env var.
+    Falls back to the hardcoded [video100, video200] pair if env var is absent.
+    Returns a list of dicts with keys: id, name, device.
+    """
+    raw = os.environ.get("SCANBOX_SOURCES", "")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list) and len(parsed) > 0:
+                result = []
+                for entry in parsed:
+                    src_id = int(entry["id"])
+                    slot   = entry.get("slot", "")
+                    label  = entry.get("label", "")
+                    result.append({
+                        "id":     src_id,
+                        "name":   _make_display_name(label),
+                        "device": slot,
+                    })
+                log.info("API: loaded %d source(s) from SCANBOX_SOURCES.", len(result))
+                return result
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            log.warning("API: SCANBOX_SOURCES parse error (%s) — using hardcoded fallback.", e)
+
+    # Hardcoded fallback (matches original behaviour)
+    log.warning("API: SCANBOX_SOURCES not set — using default [video100, video200].")
+    return [
+        {"id": 0, "name": "Physical Camera", "device": "/dev/video100"},
+        {"id": 1, "name": "Mock Camera",     "device": "/dev/video200"},
+    ]
+
+
+# Camera source definitions — built dynamically from SCANBOX_SOURCES at startup.
+SOURCES: list[dict] = _build_sources_list()
 
 # ---------------------------------------------------------------------------
-# V4L2 helpers
+# V4L2 dynamic control detection
 # ---------------------------------------------------------------------------
 
-def _get_ctrl(name: str) -> int | None:
+# Human-readable labels for known V4L2 control names.
+_CTRL_LABELS: dict[str, str] = {
+    'brightness':                'Brightness',
+    'contrast':                  'Contrast',
+    'saturation':                'Saturation',
+    'sharpness':                 'Sharpness',
+    'gain':                      'Gain',
+    'backlight_compensation':    'Backlight Comp.',
+    'auto_exposure':             'Auto Exposure',
+    'exposure_time_absolute':    'Exposure',
+    'exposure_dynamic_framerate':'Dynamic FPS',
+    'white_balance_automatic':   'Auto White Balance',
+    'white_balance_temperature': 'White Balance',
+    'power_line_frequency':      'Anti-Flicker',
+    'pan_absolute':              'Pan',
+    'tilt_absolute':             'Tilt',
+    'zoom_absolute':             'Zoom',
+    'focus_absolute':            'Focus',
+    'focus_automatic_continuous':'Autofocus',
+}
+
+
+def _parse_v4l2_output(output: str) -> tuple[list[dict], dict[str, int | None]]:
+    """
+    Parse v4l2-ctl --list-ctrls-menus output.
+    Returns:
+      definitions : list of control dicts (name, label, type, min, max, step, default, inactive, options?)
+      values      : {name: current_value_int_or_None}
+    """
+    definitions: list[dict] = []
+    values: dict[str, int | None] = {}
+    current_menu: dict | None = None
+
+    for line in output.splitlines():
+        # Menu option line: whitespace + integer + colon + label
+        if current_menu is not None and re.match(r'^\s+\d+:', line):
+            m = re.match(r'^\s+(-?\d+):\s+(.*)', line)
+            if m:
+                current_menu['options'][int(m.group(1))] = m.group(2).strip()
+            continue
+        else:
+            current_menu = None
+
+        # Control line: "  name 0xADDR (type) : key=val ..."
+        m = re.match(
+            r'^\s{1,30}(\w+)\s+0x[0-9a-f]+\s+\((int|bool|menu|button)\)\s+:(.+)',
+            line
+        )
+        if not m:
+            continue
+
+        name     = m.group(1)
+        raw_type = m.group(2)
+        params   = m.group(3)
+
+        kv       = {k: int(v) for k, v in re.findall(r'(?<!\w)(\w+)=(-?\d+)', params)}
+        inactive = 'inactive' in params
+
+        ctrl_type = ('bool' if raw_type == 'bool' else
+                     'menu' if raw_type == 'menu' else 'int')
+
+        ctrl: dict = {
+            'name':     name,
+            'label':    _CTRL_LABELS.get(name, name.replace('_', ' ').title()),
+            'type':     ctrl_type,
+            'min':      kv.get('min', 0),
+            'max':      kv.get('max', 1),
+            'step':     kv.get('step', 1),
+            'default':  kv.get('default', 0),
+            'inactive': inactive,
+        }
+
+        if ctrl_type == 'menu':
+            ctrl['options'] = {}
+            current_menu = ctrl
+
+        definitions.append(ctrl)
+        values[name] = kv.get('value')
+
+    return definitions, values
+
+
+def _query_camera_controls(device: str) -> tuple[list[dict], dict[str, int | None]]:
+    """Run v4l2-ctl --list-ctrls-menus and return (definitions, values)."""
     try:
         r = subprocess.run(
-            ["v4l2-ctl", "-d", PHYSICAL_DEVICE, f"--get-ctrl={name}"],
-            capture_output=True, text=True, timeout=3
+            ['v4l2-ctl', '-d', device, '--list-ctrls-menus'],
+            capture_output=True, text=True, timeout=5
         )
-        m = re.search(r":\s*(-?\d+)", r.stdout)
-        return int(m.group(1)) if m else None
+        if r.returncode != 0:
+            log.warning("v4l2-ctl failed for %s: %s", device, r.stderr.strip())
+            return [], {}
+        return _parse_v4l2_output(r.stdout)
     except Exception as e:
-        log.error("get_ctrl %s failed: %s", name, e)
-        return None
+        log.warning("Could not query controls for %s: %s", device, e)
+        return [], {}
 
 
 def _set_ctrl(name: str, value: int) -> bool:
@@ -191,12 +305,9 @@ def last_snapshot():
 
 @app.get("/api/v1/camera/controls")
 def get_controls():
-    """Return current values for all exposed V4L2 controls."""
-    values = {}
-    for ctrl in CAMERA_CONTROLS:
-        val = _get_ctrl(ctrl["name"])
-        values[ctrl["name"]] = val
-    return jsonify({"status": "ok", "controls": values, "definitions": CAMERA_CONTROLS})
+    """Return all V4L2 controls detected on the physical camera, with current values."""
+    defs, vals = _query_camera_controls(PHYSICAL_DEVICE)
+    return jsonify({"status": "ok", "controls": vals, "definitions": defs})
 
 
 @app.post("/api/v1/camera/control")
@@ -205,11 +316,8 @@ def set_control():
     data = request.get_json(silent=True)
     if not data or "control" not in data or "value" not in data:
         return jsonify({"status": "error", "message": "Missing 'control' or 'value'"}), 400
-    name = data["control"]
+    name  = str(data["control"])
     value = int(data["value"])
-    valid = [c["name"] for c in CAMERA_CONTROLS]
-    if name not in valid:
-        return jsonify({"status": "error", "message": f"Unknown control '{name}'"}), 400
     success = _set_ctrl(name, value)
     if not success:
         return jsonify({"status": "error", "message": f"Failed to set {name}={value}"}), 500

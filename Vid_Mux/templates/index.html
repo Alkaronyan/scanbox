@@ -129,95 +129,13 @@
       </div>
     </div>
 
-    <!-- Camera Config (real V4L2 controls) -->
+    <!-- Camera Config (V4L2 controls — rendered dynamically from device) -->
     <div class="card">
       <button class="section-toggle" onclick="toggleSection(this)">
         <span class="toggle-icon">▾</span> Camera Config
       </button>
       <div class="section-body" id="camera-config-body">
-
-        <!-- Auto Exposure toggle -->
-        <div class="config-row">
-          <label class="config-label">Auto Exposure</label>
-          <div class="toggle-group" id="ctrl-auto_exposure">
-            <button class="toggle-opt" data-value="3" onclick="setMenuCtrl('auto_exposure', 3)">Auto</button>
-            <button class="toggle-opt" data-value="1" onclick="setMenuCtrl('auto_exposure', 1)">Manual</button>
-          </div>
-        </div>
-
-        <!-- Exposure (active only in manual mode) -->
-        <div class="config-row" id="row-exposure_time_absolute">
-          <label class="config-label">Exposure <span class="hint-inline" id="val-exposure_time_absolute">—</span></label>
-          <input type="range" class="config-slider" id="slider-exposure_time_absolute"
-            min="1" max="10000" step="1" value="166"
-            oninput="onSlider('exposure_time_absolute', this.value)">
-        </div>
-
-        <div class="config-divider"></div>
-
-        <!-- Brightness -->
-        <div class="config-row">
-          <label class="config-label">Brightness <span class="hint-inline" id="val-brightness">—</span></label>
-          <input type="range" class="config-slider" id="slider-brightness"
-            min="0" max="255" step="1" value="128"
-            oninput="onSlider('brightness', this.value)">
-        </div>
-
-        <!-- Contrast -->
-        <div class="config-row">
-          <label class="config-label">Contrast <span class="hint-inline" id="val-contrast">—</span></label>
-          <input type="range" class="config-slider" id="slider-contrast"
-            min="0" max="255" step="1" value="32"
-            oninput="onSlider('contrast', this.value)">
-        </div>
-
-        <!-- Saturation -->
-        <div class="config-row">
-          <label class="config-label">Saturation <span class="hint-inline" id="val-saturation">—</span></label>
-          <input type="range" class="config-slider" id="slider-saturation"
-            min="0" max="255" step="1" value="28"
-            oninput="onSlider('saturation', this.value)">
-        </div>
-
-        <!-- Sharpness -->
-        <div class="config-row">
-          <label class="config-label">Sharpness <span class="hint-inline" id="val-sharpness">—</span></label>
-          <input type="range" class="config-slider" id="slider-sharpness"
-            min="0" max="255" step="1" value="191"
-            oninput="onSlider('sharpness', this.value)">
-        </div>
-
-        <!-- Gain -->
-        <div class="config-row">
-          <label class="config-label">Gain <span class="hint-inline" id="val-gain">—</span></label>
-          <input type="range" class="config-slider" id="slider-gain"
-            min="0" max="255" step="1" value="0"
-            oninput="onSlider('gain', this.value)">
-        </div>
-
-        <div class="config-divider"></div>
-
-        <!-- Focus (placeholder) -->
-        <div class="config-row">
-          <label class="config-label dim">Focus <span class="soon">(not implemented)</span></label>
-          <div class="ctrl-row">
-            <button class="ctrl-btn dim wide-btn" title="Focus near (Q)">🔭−</button>
-            <div class="zoom-bar"><div class="zoom-fill" id="focus-fill"></div></div>
-            <button class="ctrl-btn dim wide-btn" title="Focus far (E)">🔭+</button>
-          </div>
-        </div>
-
-        <!-- Backlight compensation -->
-        <div class="config-row">
-          <label class="config-label">Backlight Comp.</label>
-          <div class="toggle-group" id="ctrl-backlight_compensation">
-            <button class="toggle-opt" data-value="0" onclick="setBoolCtrl('backlight_compensation', 0)">Off</button>
-            <button class="toggle-opt" data-value="1" onclick="setBoolCtrl('backlight_compensation', 1)">On</button>
-          </div>
-        </div>
-
-        <button class="reset-btn" onclick="resetControls()">↺ Reset to defaults</button>
-
+        <p class="hint">Loading controls…</p>
       </div>
     </div>
 
@@ -251,7 +169,8 @@ let sliderTimers = {};
 
 // Debounce slider — send to API 300ms after user stops dragging
 function onSlider(name, value) {
-  document.getElementById('val-' + name).textContent = value;
+  const lbl = document.getElementById('val-' + name);
+  if (lbl) lbl.textContent = value;
   clearTimeout(sliderTimers[name]);
   sliderTimers[name] = setTimeout(() => sendControl(name, parseInt(value)), 300);
 }
@@ -267,21 +186,15 @@ async function sendControl(name, value) {
 }
 
 async function setMenuCtrl(name, value) {
+  updateToggleGroup(name, value);   // optimistic update
   await sendControl(name, value);
-  updateToggleGroup(name, value);
-  // Enable/disable exposure slider based on auto_exposure mode
-  if (name === 'auto_exposure') {
-    const row = document.getElementById('row-exposure_time_absolute');
-    const slider = document.getElementById('slider-exposure_time_absolute');
-    const isManual = value === 1;
-    row.classList.toggle('disabled', !isManual);
-    slider.disabled = !isManual;
-  }
+  await loadControls();             // reload to reflect inactive state changes
 }
 
 async function setBoolCtrl(name, value) {
+  updateToggleGroup(name, value);   // optimistic update
   await sendControl(name, value);
-  updateToggleGroup(name, value);
+  await loadControls();
 }
 
 function updateToggleGroup(name, value) {
@@ -292,42 +205,118 @@ function updateToggleGroup(name, value) {
   });
 }
 
+// ── Dynamic camera controls rendering ────────────────────────────────────
+// Reads control definitions + current values from the API and builds the
+// Camera Config section from scratch. Works with any V4L2 camera.
+
+let _cameraDefaults = {};  // populated by renderControls, used by resetControls
+
+function renderControls(definitions, values) {
+  const body = document.getElementById('camera-config-body');
+  body.innerHTML = '';
+  _cameraDefaults = {};
+
+  definitions.forEach(def => {
+    const val      = values[def.name] ?? def.default;
+    const inactive = def.inactive;
+
+    // Remember defaults for reset
+    _cameraDefaults[def.name] = def.default;
+
+    // Determine widget type
+    const isBinary = (def.type === 'int' && (def.max - def.min) === 1 && def.step === 1);
+    const isToggle = (def.type === 'bool' || isBinary);
+    const isMenu   = (def.type === 'menu');
+    const isSlider = (def.type === 'int' && !isBinary);
+
+    const row = document.createElement('div');
+    row.className = 'config-row' + (inactive ? ' disabled' : '');
+    row.id = 'row-' + def.name;
+
+    // Label
+    const lbl = document.createElement('label');
+    lbl.className = 'config-label' + (inactive ? ' dim' : '');
+    if (isSlider) {
+      lbl.innerHTML = `${def.label} <span class="hint-inline" id="val-${def.name}">${val ?? '—'}</span>`;
+    } else {
+      lbl.textContent = def.label;
+    }
+    row.appendChild(lbl);
+
+    // Widget
+    if (isSlider) {
+      const input = document.createElement('input');
+      input.type      = 'range';
+      input.className = 'config-slider';
+      input.id        = 'slider-' + def.name;
+      input.min       = def.min;
+      input.max       = def.max;
+      input.step      = def.step;
+      input.value     = val ?? def.default;
+      input.disabled  = inactive;
+      const ctrlName  = def.name;
+      input.oninput   = function() { onSlider(ctrlName, this.value); };
+      row.appendChild(input);
+
+    } else if (isMenu) {
+      const grp = document.createElement('div');
+      grp.className = 'toggle-group';
+      grp.id = 'ctrl-' + def.name;
+      Object.entries(def.options).forEach(([optKey, optLabel]) => {
+        const optVal = parseInt(optKey);
+        const btn = document.createElement('button');
+        btn.className     = 'toggle-opt' + (optVal === val ? ' active' : '');
+        btn.dataset.value = optVal;
+        btn.textContent   = optLabel;
+        btn.disabled      = inactive;
+        const ctrlName    = def.name;
+        btn.onclick = function() { setMenuCtrl(ctrlName, optVal); };
+        grp.appendChild(btn);
+      });
+      row.appendChild(grp);
+
+    } else if (isToggle) {
+      const grp = document.createElement('div');
+      grp.className = 'toggle-group';
+      grp.id = 'ctrl-' + def.name;
+      [['Off', 0], ['On', 1]].forEach(([label, btnVal]) => {
+        const btn = document.createElement('button');
+        btn.className     = 'toggle-opt' + (btnVal === val ? ' active' : '');
+        btn.dataset.value = btnVal;
+        btn.textContent   = label;
+        btn.disabled      = inactive;
+        const ctrlName    = def.name;
+        btn.onclick = function() { setBoolCtrl(ctrlName, btnVal); };
+        grp.appendChild(btn);
+      });
+      row.appendChild(grp);
+    }
+
+    body.appendChild(row);
+  });
+
+  // Reset button
+  const div = document.createElement('div');
+  div.className = 'config-divider';
+  body.appendChild(div);
+  const resetBtn = document.createElement('button');
+  resetBtn.className = 'reset-btn';
+  resetBtn.textContent = '↺ Reset to defaults';
+  resetBtn.onclick = resetControls;
+  body.appendChild(resetBtn);
+}
+
 async function loadControls() {
   try {
     const r = await fetch('/api/v1/camera/controls');
     const d = await r.json();
     if (d.status !== 'ok') return;
-    const v = d.controls;
-    // Update sliders
-    ['brightness','contrast','saturation','sharpness','gain','exposure_time_absolute'].forEach(name => {
-      if (v[name] == null) return;
-      const slider = document.getElementById('slider-' + name);
-      const label  = document.getElementById('val-' + name);
-      if (slider) slider.value = v[name];
-      if (label)  label.textContent = v[name];
-    });
-    // Update toggles
-    if (v.auto_exposure != null) {
-      updateToggleGroup('auto_exposure', v.auto_exposure);
-      const isManual = v.auto_exposure === 1;
-      const row = document.getElementById('row-exposure_time_absolute');
-      const slider = document.getElementById('slider-exposure_time_absolute');
-      if (row)    row.classList.toggle('disabled', !isManual);
-      if (slider) slider.disabled = !isManual;
-    }
-    if (v.backlight_compensation != null) {
-      updateToggleGroup('backlight_compensation', v.backlight_compensation);
-    }
+    renderControls(d.definitions, d.controls);
   } catch(e) { console.error('loadControls failed', e); }
 }
 
-const DEFAULTS = {
-  brightness: 128, contrast: 32, saturation: 28,
-  sharpness: 191, gain: 0, backlight_compensation: 1, auto_exposure: 3
-};
-
 async function resetControls() {
-  for (const [name, value] of Object.entries(DEFAULTS)) {
+  for (const [name, value] of Object.entries(_cameraDefaults)) {
     await sendControl(name, value);
   }
   await loadControls();
@@ -403,11 +392,13 @@ document.getElementById('snap-btn').onclick = takeSnapshot;
 // ── Fake zoom / focus ─────────────────────────────────────────────────────
 function setZoom(delta) {
   zoomLevel = Math.max(0, Math.min(100, zoomLevel + delta));
-  document.getElementById('zoom-fill').style.width = zoomLevel + '%';
+  const el = document.getElementById('zoom-fill');
+  if (el) el.style.width = zoomLevel + '%';
 }
 function setFocus(delta) {
   focusLevel = Math.max(0, Math.min(100, focusLevel + delta));
-  document.getElementById('focus-fill').style.width = focusLevel + '%';
+  const el = document.getElementById('focus-fill');
+  if (el) el.style.width = focusLevel + '%';
 }
 setZoom(0); setFocus(0);
 

@@ -1,0 +1,25 @@
+[Unit]
+Description=SCANBOX — Dynamic camera detection and video switcher stack
+Requires=docker.service
+After=docker.service scanbox-gadget.service network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/Alfred/scanbox
+ExecStart=/home/Alfred/scanbox/scripts/rebuild_vid_mux.sh
+
+# Restart on failure with a backoff delay.
+Restart=on-failure
+RestartSec=10s
+
+# Give vid_mux_test time to compile v4l2loopback on first boot (~90s).
+TimeoutStartSec=300
+
+# Logging goes to journald by default (StandardOutput/Error inherit).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=scanbox
+
+[Install]
+WantedBy=multi-user.target

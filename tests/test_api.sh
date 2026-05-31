@@ -4,6 +4,10 @@
 # Requires vid_mux container to be running and accessible at API_BASE.
 # Uses curl (host) if available; otherwise falls back to a docker helper.
 #
+# Source list is discovered dynamically from GET /api/v1/status; no
+# hardcoded source IDs. Number of sources is verified against the cameras
+# detected on the host.
+#
 # Exit 0 = all checks passed.  Exit 1 = one or more checks failed.
 
 set -euo pipefail
@@ -74,21 +78,57 @@ if check_status 200 "Status endpoint reachable"; then
     fi
 fi
 
-# ── 2. POST /api/v1/source → source_id=0 ─────────────────────────────────────
+# ── 2. Discover sources from API ──────────────────────────────────────────────
+# Parse source IDs from the status response so all remaining tests are dynamic.
 echo ""
-echo "[2] POST /api/v1/source {source_id: 0}"
-http_call POST /api/v1/source '{"source_id":0}'
-check_status 200 "Switch to source 0"
+echo "[2] Discover source list from API"
+http_call GET /api/v1/status
+# Extract all "id":N values from the sources array (simple grep approach)
+mapfile -t API_SOURCE_IDS < <(echo "${HTTP_BODY}" | grep -o '"id":[0-9]*' | grep -o '[0-9]*' || true)
+API_SOURCE_COUNT=${#API_SOURCE_IDS[@]}
 
-# ── 3. POST /api/v1/source → source_id=1 ─────────────────────────────────────
-echo ""
-echo "[3] POST /api/v1/source {source_id: 1}"
-http_call POST /api/v1/source '{"source_id":1}'
-check_status 200 "Switch to source 1"
+if [ "${API_SOURCE_COUNT}" -ge 1 ]; then
+    pass "API reports ${API_SOURCE_COUNT} source(s): IDs = ${API_SOURCE_IDS[*]}"
+else
+    fail "Could not parse source IDs from /api/v1/status response"
+fi
 
-# ── 4. POST /api/v1/source → source_id=99 (invalid) ─────────────────────────
+# ── 3. Verify source count matches host camera count ─────────────────────────
 echo ""
-echo "[4] POST /api/v1/source {source_id: 99} (invalid)"
+echo "[3] Verify source count matches detected cameras on host"
+HOST_PHYSICAL_COUNT=$(ls /dev/v4l/by-id/*-video-index0 2>/dev/null | wc -l)
+HOST_MOCK=0
+[ -e /dev/video200 ] && HOST_MOCK=1
+HOST_TOTAL=$(( HOST_PHYSICAL_COUNT + HOST_MOCK ))
+
+echo "  Host cameras: ${HOST_PHYSICAL_COUNT} physical + ${HOST_MOCK} mock = ${HOST_TOTAL} total"
+echo "  API sources : ${API_SOURCE_COUNT}"
+
+if [ "${API_SOURCE_COUNT}" -eq "${HOST_TOTAL}" ] && [ "${HOST_TOTAL}" -ge 1 ]; then
+    pass "API source count (${API_SOURCE_COUNT}) matches host camera count (${HOST_TOTAL})"
+elif [ "${HOST_TOTAL}" -eq 0 ]; then
+    pass "No cameras on host — skipping count match (API reports ${API_SOURCE_COUNT})"
+else
+    fail "Source count mismatch: API=${API_SOURCE_COUNT}, host=${HOST_TOTAL}"
+fi
+
+# ── 4. POST /api/v1/source → switch to each discovered source ─────────────────
+echo ""
+echo "[4] Switch to each discovered source"
+for src_id in "${API_SOURCE_IDS[@]}"; do
+    http_call POST /api/v1/source "{\"source_id\":${src_id}}"
+    check_status 200 "Switch to source ${src_id}"
+done
+
+# Switch back to first source for subsequent tests
+if [ "${API_SOURCE_COUNT}" -ge 1 ]; then
+    FIRST_ID="${API_SOURCE_IDS[0]}"
+    http_call POST /api/v1/source "{\"source_id\":${FIRST_ID}}" >/dev/null || true
+fi
+
+# ── 5. POST /api/v1/source → invalid source_id ───────────────────────────────
+echo ""
+echo "[5] POST /api/v1/source {source_id: 99} (invalid)"
 http_call POST /api/v1/source '{"source_id":99}'
 if [ "${HTTP_STATUS}" != "200" ] || echo "${HTTP_BODY}" | grep -q '"error"'; then
     pass "Invalid source rejected (HTTP ${HTTP_STATUS})"
@@ -96,14 +136,14 @@ else
     fail "Invalid source_id 99 should have been rejected"
 fi
 
-# ── 5. POST /api/v1/snapshot ─────────────────────────────────────────────────
-# Switch back to source 0 (physical camera) before snapshot — input-selector
-# needs a moment to start forwarding frames after a switch, and source 0 is
-# always ready. Testing snapshot functionality, not a specific source.
+# ── 6. POST /api/v1/snapshot ─────────────────────────────────────────────────
+# Switch to first source before snapshot — it's always ready.
 echo ""
-echo "[5] POST /api/v1/snapshot"
-http_call POST /api/v1/source '{"source_id":0}' >/dev/null
-sleep 0.5
+echo "[6] POST /api/v1/snapshot"
+if [ "${API_SOURCE_COUNT}" -ge 1 ]; then
+    http_call POST /api/v1/source "{\"source_id\":${API_SOURCE_IDS[0]}}" >/dev/null || true
+    sleep 0.5
+fi
 http_call POST /api/v1/snapshot
 if check_status 200 "Snapshot endpoint returns 200"; then
     SNAP_FILE="$(echo "${HTTP_BODY}" | grep -o '"filename":"[^"]*"' | cut -d'"' -f4 || true)"
@@ -114,9 +154,9 @@ if check_status 200 "Snapshot endpoint returns 200"; then
     fi
 fi
 
-# ── 6. GET /api/v1/snapshot/last ─────────────────────────────────────────────
+# ── 7. GET /api/v1/snapshot/last ─────────────────────────────────────────────
 echo ""
-echo "[6] GET /api/v1/snapshot/last"
+echo "[7] GET /api/v1/snapshot/last"
 http_call GET /api/v1/snapshot/last
 if check_status 200 "Last snapshot returns HTTP 200"; then
     if curl -s -I "${API_BASE}/api/v1/snapshot/last" 2>/dev/null | grep -qi "Content-Type: image/jpeg"; then
@@ -126,9 +166,9 @@ if check_status 200 "Last snapshot returns HTTP 200"; then
     fi
 fi
 
-# ── 7. GET /api/v1/camera/controls ───────────────────────────────────────────
+# ── 8. GET /api/v1/camera/controls ───────────────────────────────────────────
 echo ""
-echo "[7] GET /api/v1/camera/controls"
+echo "[8] GET /api/v1/camera/controls"
 http_call GET /api/v1/camera/controls
 if check_status 200 "Camera controls endpoint reachable"; then
     MISSING=""
@@ -144,9 +184,9 @@ if check_status 200 "Camera controls endpoint reachable"; then
     fi
 fi
 
-# ── 8. POST /api/v1/camera/control — set saturation then restore ──────────────
+# ── 9. POST /api/v1/camera/control — set saturation then restore ──────────────
 echo ""
-echo "[8] POST /api/v1/camera/control (saturation: set + restore)"
+echo "[9] POST /api/v1/camera/control (saturation: set + restore)"
 # Get current value
 http_call GET /api/v1/camera/controls
 ORIGINAL_SAT="$(echo "${HTTP_BODY}" | grep -o '"saturation":[0-9]*' | cut -d: -f2 || true)"
@@ -161,9 +201,9 @@ else
     fi
 fi
 
-# ── 9. GET /stream ────────────────────────────────────────────────────────────
+# ── 10. GET /stream ───────────────────────────────────────────────────────────
 echo ""
-echo "[9] GET /stream (check MJPEG Content-Type)"
+echo "[10] GET /stream (check MJPEG Content-Type)"
 STREAM_HEADERS="$(curl -s -I --max-time 3 "${API_BASE}/stream" 2>/dev/null || true)"
 if echo "${STREAM_HEADERS}" | grep -q "HTTP/1"; then
     STREAM_HTTP="$(echo "${STREAM_HEADERS}" | grep "^HTTP/" | tail -1 | awk '{print $2}')"
