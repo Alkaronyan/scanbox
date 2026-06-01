@@ -1,10 +1,10 @@
 # SCANBOX — Scripts Reference
 
-All scripts live in `scripts/`. They are the only host-side executable logic in the project — everything else runs inside containers.
+Host provisioning scripts live in `host/`. The runtime operational script (`rebuild_vid_mux.sh`) lives at the project root. Everything else runs inside containers.
 
 ---
 
-## scripts/setup_host.sh
+## host/setup_host.sh
 
 **Purpose:** One-time host provisioning for a fresh Raspberry Pi.
 
@@ -12,13 +12,13 @@ Installs the bare minimum that must exist on the host OS:
 - Docker Engine + compose plugin
 - Kernel headers (`linux-headers-<running-kernel>`) — required so Vid_Mux_TEST can compile v4l2loopback inside its container against the live kernel
 - `git`
-- Copies `systemd/scanbox-gadget.service` and `systemd/scanbox.service` to `/etc/systemd/system/` and enables them
+- Copies `host/scanbox-gadget.service` and `host/scanbox.service` to `/etc/systemd/system/` and enables them
 
 Also generates `.env` with `KBUILD_DIR=<path>` so `rebuild_vid_mux.sh` and `Vid_Mux_TEST` know where the kbuild scripts live.
 
 **Usage:**
 ```bash
-sudo ./scripts/setup_host.sh
+sudo ./host/setup_host.sh
 sudo reboot
 ```
 
@@ -28,39 +28,39 @@ Idempotent — safe to re-run after a kernel update to refresh `KBUILD_DIR` and 
 
 ---
 
-## scripts/setup_usb_gadget.sh
+## host/setup_usb_gadget.sh
 
 **Purpose:** Configure the USB NCM network gadget on the Pi 4 USB-C port.
 
-Must run as root. Called automatically at boot by `systemd/scanbox-gadget.service` (which runs before Docker). Safe to run manually — fully idempotent.
+Must run as root. Called automatically at boot by `host/scanbox-gadget.service` (which runs before Docker). Safe to run manually — fully idempotent.
 
 What it does:
 1. Loads `libcomposite` and `usb_f_ncm` kernel modules
 2. Tears down any existing gadget at `/sys/kernel/config/usb_gadget/scanbox`
 3. Creates a new NCM gadget definition in configfs
 4. Binds it to the `fe980000.usb` UDC (Pi 4 USB-C port)
-5. Assigns `192.168.55.1/24` to the resulting `usb0` interface
+5. Assigns `192.168.199.1/30` to the resulting `usb0` interface
 
 Why it must be on the host: configfs is a kernel-space filesystem. Manipulating it requires root and direct access to `/sys` — not possible from inside a container without full privilege + host kernel namespace sharing, which defeats the security model.
 
 **Usage:**
 ```bash
-sudo ./scripts/setup_usb_gadget.sh
+sudo ./host/setup_usb_gadget.sh
 ```
 
 **Network result:**
 | Side | IP |
 |---|---|
-| Pi (device) | 192.168.55.1 |
-| Windows PC (host) | 192.168.55.100–200 (DHCP via scanbox_dhcp) |
+| Pi (device) | 192.168.199.1 |
+| Windows PC (host) | 192.168.199.2 (DHCP via scanbox_dhcp, /30 point-to-point) |
 
 ---
 
-## scripts/rebuild_vid_mux.sh
+## rebuild_vid_mux.sh
 
 **Purpose:** Full stack lifecycle manager — detects cameras, builds the vid_mux image, and launches all containers.
 
-This is the primary operational script. It is called at every boot by `systemd/scanbox.service` and should also be called manually after code changes or when a new camera is plugged in.
+This is the primary operational script. It is called at every boot by `host/scanbox.service` and should also be called manually after code changes or when a new camera is plugged in.
 
 **Boot flow:**
 1. **scanbox_dhcp** — start if not already running (DHCP server on usb0)
@@ -73,7 +73,7 @@ This is the primary operational script. It is called at every boot by `systemd/s
 **Usage:**
 ```bash
 # From the project root:
-./scripts/rebuild_vid_mux.sh
+./rebuild_vid_mux.sh
 ```
 
 **Output:** prints `SCANBOX_SOURCES` JSON and the Web UI URL on success.

@@ -7,7 +7,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/Alfred/scanbox
-ExecStart=/home/Alfred/scanbox/scripts/rebuild_vid_mux.sh
+ExecStart=/home/Alfred/scanbox/rebuild_vid_mux.sh
 
 # Restart on failure with a backoff delay.
 Restart=on-failure

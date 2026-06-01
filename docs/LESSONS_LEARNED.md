@@ -153,7 +153,7 @@ docker build --no-cache -t vid_mux Vid_Mux/
 **`docker compose up -d vid_mux` recreates all services, not just one**
 Due to dependency declarations in `docker-compose.yml`, compose may attempt
 to recreate `vid_mux_test` even when only `vid_mux` is requested. Use the
-rebuild script `scripts/rebuild_vid_mux.sh` instead, which manages each
+rebuild script `rebuild_vid_mux.sh` instead, which manages each
 container independently.
 
 **`/tmp/scanbox_cameras.env` ownership conflict**
@@ -162,7 +162,7 @@ by root. If `rebuild_vid_mux.sh` is later run as user Alfred, it fails with
 `Permission denied` when trying to overwrite that file. Fix:
 ```bash
 sudo rm /tmp/scanbox_cameras.env
-./scripts/rebuild_vid_mux.sh
+./rebuild_vid_mux.sh
 ```
 Long-term fix: write the env file to a project-owned location or always run
 the script with the same user.

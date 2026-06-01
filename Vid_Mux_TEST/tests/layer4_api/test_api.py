@@ -56,6 +56,8 @@ import os
 
 import pytest
 
+from tests.utils.snapshot_helpers import snap_name
+
 
 @pytest.mark.layer4
 def test_status_returns_ok(api_url, http_session):
@@ -237,7 +239,7 @@ def test_switch_invalid_source_returns_error(api_url, http_session):
 
 
 @pytest.mark.layer4
-def test_snapshot_returns_success(api_url, http_session):
+def test_snapshot_returns_success(request, api_url, http_session, snapshots_dir, snapshot_collector):
     """
     Verify that POST /api/v1/snapshot returns HTTP 200 with status=success.
 
@@ -246,8 +248,11 @@ def test_snapshot_returns_success(api_url, http_session):
     frame refresher has not populated _last_frame yet, or the disk write failed.
 
     Args:
+        request: pytest request object; provides test name for filename generation.
         api_url: Base API URL.
         http_session: Shared HTTP session.
+        snapshots_dir: Absolute path to the host snapshots directory.
+        snapshot_collector: Collects snapshot paths; deletes them on test pass.
 
     Returns:
         None
@@ -256,17 +261,23 @@ def test_snapshot_returns_success(api_url, http_session):
         AssertionError: If the snapshot endpoint returns a non-200 status or
             a body without status=success.
     """
-    resp = http_session.post(f"{api_url}/api/v1/snapshot")
+    resp = http_session.post(
+        f"{api_url}/api/v1/snapshot",
+        json={"filename": snap_name(request.node.name)},
+    )
     assert resp.status_code == 200, (
         f"POST /api/v1/snapshot returned HTTP {resp.status_code}"
     )
     assert resp.json().get("status") == "success", (
         f"Snapshot response status != success: {resp.json()}"
     )
+    filename = resp.json().get("filename")
+    if filename:
+        snapshot_collector.append(os.path.join(snapshots_dir, filename))
 
 
 @pytest.mark.layer4
-def test_snapshot_file_created(api_url, http_session, snapshots_dir):
+def test_snapshot_file_created(request, api_url, http_session, snapshots_dir, snapshot_collector):
     """
     Verify that a JPEG file actually appears on disk after POST /api/v1/snapshot.
 
@@ -276,9 +287,11 @@ def test_snapshot_file_created(api_url, http_session, snapshots_dir):
     is wrong, or the disk is full.
 
     Args:
+        request: pytest request object; provides test name for filename generation.
         api_url: Base API URL.
         http_session: Shared HTTP session.
         snapshots_dir: Absolute path to the host snapshots directory.
+        snapshot_collector: Collects snapshot paths; deletes them on test pass.
 
     Returns:
         None
@@ -287,7 +300,10 @@ def test_snapshot_file_created(api_url, http_session, snapshots_dir):
         AssertionError: If the snapshot file named in the response does not
             exist on the host filesystem.
     """
-    resp = http_session.post(f"{api_url}/api/v1/snapshot")
+    resp = http_session.post(
+        f"{api_url}/api/v1/snapshot",
+        json={"filename": snap_name(request.node.name)},
+    )
     assert resp.status_code == 200
     data = resp.json()
     filename = data.get("filename")
@@ -297,10 +313,11 @@ def test_snapshot_file_created(api_url, http_session, snapshots_dir):
         f"Snapshot file does not exist on host: {path} — "
         "check the bind mount for /exports/snapshots in docker-compose.yml"
     )
+    snapshot_collector.append(path)
 
 
 @pytest.mark.layer4
-def test_snapshot_last_returns_jpeg(api_url, http_session):
+def test_snapshot_last_returns_jpeg(request, api_url, http_session, snapshots_dir, snapshot_collector):
     """
     Verify that GET /api/v1/snapshot/last returns Content-Type: image/jpeg.
 
@@ -313,8 +330,11 @@ def test_snapshot_last_returns_jpeg(api_url, http_session):
     verifies the Content-Type of the last-snapshot endpoint.
 
     Args:
+        request: pytest request object; provides test name for filename generation.
         api_url: Base API URL.
         http_session: Shared HTTP session.
+        snapshots_dir: Absolute path to the host snapshots directory.
+        snapshot_collector: Collects snapshot paths; deletes them on test pass.
 
     Returns:
         None
@@ -323,7 +343,14 @@ def test_snapshot_last_returns_jpeg(api_url, http_session):
         AssertionError: If the endpoint returns a non-200 status or a
             Content-Type that does not include image/jpeg.
     """
-    http_session.post(f"{api_url}/api/v1/snapshot")  # ensure at least one snapshot exists
+    snap_resp = http_session.post(
+        f"{api_url}/api/v1/snapshot",
+        json={"filename": snap_name(request.node.name)},
+    )
+    filename = snap_resp.json().get("filename")
+    if filename:
+        snapshot_collector.append(os.path.join(snapshots_dir, filename))
+
     resp = http_session.get(f"{api_url}/api/v1/snapshot/last")
     assert resp.status_code == 200, (
         f"GET /api/v1/snapshot/last returned HTTP {resp.status_code}"

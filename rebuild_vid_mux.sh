@@ -1,7 +1,7 @@
 #!/bin/bash
 # rebuild_vid_mux.sh — Start/rebuild the full SCANBOX container stack.
 #
-# Boot flow (called by systemd/scanbox.service):
+# Boot flow (called by host/scanbox.service):
 #   1. Start scanbox_dhcp (DHCP for USB NCM link) — skip if already running
 #   2. Start vid_mux_test (mock camera scaffold) — skip if already healthy
 #   3. Wait for /dev/video200 to appear (up to 120s)
@@ -9,12 +9,11 @@
 #   5. Stop, rebuild, and relaunch vid_mux with dynamic SCANBOX_SOURCES
 #
 # Also used manually to pick up new cameras or rebuild after code changes.
-# Run from the scanbox project root: ./scripts/rebuild_vid_mux.sh
+# Run from the scanbox project root: ./rebuild_vid_mux.sh
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${PROJECT_ROOT}"
 
 # ── Helper: check if a container is running ──────────────────────────────────
@@ -73,7 +72,7 @@ else
     fi
 
     if [[ -z "${KBUILD_DIR}" ]]; then
-        echo "ERROR: Cannot determine KBUILD_DIR. Run sudo ./scripts/setup_host.sh first." >&2
+        echo "ERROR: Cannot determine KBUILD_DIR. Run sudo ./host/setup_host.sh first." >&2
         exit 1
     fi
 

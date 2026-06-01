@@ -11,11 +11,11 @@ We need to resume the project precisely where we left off. Act as our senior sof
 * The USB-C port on Pi 4 supports dwc2 gadget mode — this is the data connection to the PC
 
 ### Project Context & Decisions
-1. **Host OS Preservation (Strict Containerization)**: Everything that can run inside a container does. Only Docker Engine, kernel headers, git, and systemd services are installed on the host via scripts/setup_host.sh.
+1. **Host OS Preservation (Strict Containerization)**: Everything that can run inside a container does. Only Docker Engine, kernel headers, git, and systemd services are installed on the host via host/setup_host.sh.
 2. **Component Separation**:
    * Vid_Mux Container: Production application. GStreamer switching, Flask REST API, MJPEG stream, Web UI.
    * Vid_Mux_TEST Container: Mock camera scaffold. Compiles v4l2loopback against host kernel, creates /dev/video200, feeds SMPTE synthetic stream.
-   * scanbox_dhcp Container: DHCP server for USB NCM link. Runs dnsmasq on host network, assigns IPs 192.168.55.100-200 to Windows PC.
+   * scanbox_dhcp Container: DHCP server for USB NCM link. Runs dnsmasq on host network, assigns 192.168.199.2 to Windows PC (/30 point-to-point).
 3. **Deterministic Device Mapping**:
    * Input 0 (Physical): /dev/video100 ← /dev/v4l/by-id/usb-046d_0809_5DD0F8C2-video-index0 (Logitech C270)
    * Input 1 (Mock): /dev/video200 ← created by Vid_Mux_TEST via v4l2loopback video_nr=200
@@ -52,15 +52,12 @@ scanbox/
 │   ├── RESTART_PROMPT.md
 │   ├── SCRIPTS.md                      # All scripts documented
 │   └── TESTS.md                        # All test suites documented
-├── scripts/
-│   ├── setup_host.sh           # Host provisioning (run once as root, idempotent)
-│   ├── setup_usb_gadget.sh     # USB NCM gadget configfs setup (host-only, run by systemd)
-│   ├── rebuild_vid_mux.sh      # Stop → rebuild → relaunch Vid_Mux manually
-│   └── capture_test.sh         # Single-frame capture test tool
-├── systemd/
+├── host/                 # Host provisioning — run once on a fresh Pi (as root)
+│   ├── setup_host.sh           # Bootstrap: Docker, kernel headers, git, systemd services
+│   ├── setup_usb_gadget.sh     # USB NCM gadget configfs setup (called by systemd)
 │   ├── scanbox-gadget.service  # Configures USB NCM gadget before Docker starts
-│   ├── scanbox-stack.service   # Legacy: docker compose up -d (kept for reference)
 │   └── scanbox.service         # Boot orchestrator: calls rebuild_vid_mux.sh (dynamic cameras)
+├── rebuild_vid_mux.sh          # Stop → rebuild → relaunch Vid_Mux (called at boot and manually)
 ├── tests/
 │   ├── run_all.sh              # Run all suites, print summary table
 │   ├── test_cameras.sh         # Camera detection + GStreamer frame capture
@@ -112,7 +109,7 @@ Vid_Mux production container fully operational.
   - `↺ Reset to defaults` button resets all controls to their v4l2 default values
 * Works with any V4L2-compatible camera — no hardcoded control list
 
-**Rebuild script:** ./scripts/rebuild_vid_mux.sh (from project root)
+**Rebuild script:** ./rebuild_vid_mux.sh (from project root)
 **Snapshots:** /home/Alfred/scanbox/snapshots/ (bind-mounted)
 
 **Web UI keyboard shortcuts:**
@@ -120,7 +117,7 @@ Space=snapshot | Tab/←/→=cycle sources | Q/E=focus(fake) | Ctrl+Scroll=zoom(
 
 ### Dynamic Multi-Camera Support — COMPLETED ✅
 
-**SCANBOX_SOURCES env var** — passed by `scripts/rebuild_vid_mux.sh` to the container at runtime:
+**SCANBOX_SOURCES env var** — passed by `rebuild_vid_mux.sh` to the container at runtime:
 ```json
 [
   {"id": 0, "slot": "/dev/video100", "label": "usb-046d_0809_5DD0F8C2"},
@@ -146,7 +143,7 @@ SCANBOX_SOURCES=[...]
 ```
 
 **Key files changed:**
-* `scripts/rebuild_vid_mux.sh` — scans all `/dev/v4l/by-id/*-video-index0`, builds `--device` flags, builds and passes `SCANBOX_SOURCES`
+* `rebuild_vid_mux.sh` — scans all `/dev/v4l/by-id/*-video-index0`, builds `--device` flags, builds and passes `SCANBOX_SOURCES`
 * `Vid_Mux/switcher.py` — reads `SCANBOX_SOURCES`, builds GStreamer pipeline dynamically (N physical + mock); physical cams use MJPEG caps + jpegdec; mock uses `videotestsrc` (not v4l2src — see kernel constraint above)
 * `Vid_Mux/api.py` — `SOURCES` list built from `SCANBOX_SOURCES`; display names resolved at startup via `_get_camera_card_name()` (sysfs → v4l2-ctl --info fallback); mock always "Mock Camera"; cameras that expose no USB product string (e.g. `046d:0809`) fall back to label-derived name
 * `Vid_Mux/templates/index.html` — loads 7 external JS modules via `<script src>` tags; no inline JS
@@ -155,40 +152,40 @@ SCANBOX_SOURCES=[...]
 
 **Note on docker-compose vs rebuild_vid_mux.sh:**
 - `docker compose up -d` (boot automation): uses the static `SCANBOX_SOURCES` in `docker-compose.yml` — works for the standard 1-physical + 1-mock setup
-- `./scripts/rebuild_vid_mux.sh` (manual / multi-camera): dynamically detects all cameras, assigns slots, builds correct `--device` flags — use this when you have 2+ physical cameras or a different camera attached
+- `./rebuild_vid_mux.sh` (manual / multi-camera): dynamically detects all cameras, assigns slots, builds correct `--device` flags — use this when you have 2+ physical cameras or a different camera attached
 
 ### Phase 3 — COMPLETED ✅
 USB NCM gadget + DHCP + full boot automation fully operational.
 
-**USB NCM Network (192.168.55.0/24):**
-* Pi (device side) : 192.168.55.1 — assigned by setup_usb_gadget.sh
-* Windows (host)   : 192.168.55.100-200 — assigned by scanbox_dhcp container (dnsmasq)
-* Web UI accessible over USB at http://192.168.55.1 — Windows 11 native driver, plug & play
+**USB NCM Network (192.168.199.0/30 — point-to-point, 2 usable hosts):**
+* Pi (device side) : 192.168.199.1 — assigned by setup_usb_gadget.sh
+* Windows (host)   : 192.168.199.2 — assigned by scanbox_dhcp container (dnsmasq)
+* Web UI accessible over USB at http://192.168.199.1 — Windows 11 native driver, plug & play
 
 **Boot sequence (fully automatic):**
 ```
-1. scanbox-gadget.service  → loads libcomposite + usb_f_ncm, creates NCM gadget, assigns 192.168.55.1 to usb0
-2. scanbox.service         → runs scripts/rebuild_vid_mux.sh (after docker.service)
+1. scanbox-gadget.service  → loads libcomposite + usb_f_ncm, creates NCM gadget, assigns 192.168.199.1 to usb0
+2. scanbox.service         → runs rebuild_vid_mux.sh (after docker.service)
    ├── scanbox_dhcp         → started if not running; dnsmasq listens on usb0
    ├── vid_mux_test         → started if not healthy; compiles v4l2loopback (~60-90s first boot)
    │    └── waits for /dev/video200 (polls every 2s, 120s timeout)
    └── vid_mux              → built and launched with dynamically detected cameras
 ```
 
-**systemd/scanbox.service** — primary boot orchestrator (replaces scanbox-stack.service):
+**host/scanbox.service** — primary boot orchestrator (replaces scanbox-stack.service):
 * `Type=simple`, `Restart=on-failure`, `RestartSec=10s`
-* Calls `scripts/rebuild_vid_mux.sh` which handles the full stack lifecycle
+* Calls `rebuild_vid_mux.sh` which handles the full stack lifecycle
 * Key advantage over `docker compose up -d`: detects cameras dynamically at every boot
 
 **Host-only exceptions (cannot be containerized):**
-* scripts/setup_usb_gadget.sh — requires direct kernel configfs access
-* systemd/scanbox-gadget.service — must run before Docker daemon
-* systemd/scanbox.service — boot orchestrator, calls rebuild_vid_mux.sh
+* host/setup_usb_gadget.sh — requires direct kernel configfs access
+* host/scanbox-gadget.service — must run before Docker daemon
+* host/scanbox.service — boot orchestrator, calls rebuild_vid_mux.sh
 * .env — machine-specific KBUILD_DIR for kernel module compilation
 
 **Initial setup (fresh Pi):**
 ```bash
-sudo ./scripts/setup_host.sh   # installs Docker, kernel headers, systemd services, generates .env
+sudo ./host/setup_host.sh   # installs Docker, kernel headers, systemd services, generates .env
 # reboot — everything starts automatically
 ```
 

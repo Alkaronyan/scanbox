@@ -9,16 +9,16 @@
 #   2. Creates a USB gadget definition in configfs (/sys/kernel/config)
 #   3. Binds the gadget to the dwc2 UDC — Pi 4 USB-C port appears as an
 #      NCM ethernet adapter to the connected Windows PC
-#   4. Assigns the static IP 192.168.55.1/24 to the resulting usb0 interface
+#   4. Assigns the static IP 192.168.199.1/30 to the resulting usb0 interface
 #
 # configfs is a kernel-space filesystem. Manipulating it requires root and
 # direct access to /sys — it cannot be done from inside a container without
 # making the container fully privileged AND sharing the host PID/kernel
 # namespace, which would defeat the security model entirely.
 #
-# Network: 192.168.55.0/24
-#   Pi (device side) : 192.168.55.1  — set here
-#   Windows (host)   : 192.168.55.100-200 — assigned by scanbox_dhcp container
+# Network: 192.168.199.0/30
+#   Pi (device side) : 192.168.199.1  — set here
+#   Windows (host)   : 192.168.199.2  — assigned by scanbox_dhcp container
 #
 # =============================================================================
 set -euo pipefail
@@ -26,7 +26,7 @@ set -euo pipefail
 GADGET_DIR="/sys/kernel/config/usb_gadget/scanbox"
 UDC="fe980000.usb"
 USB_IF="usb0"
-STATIC_IP="192.168.55.1/24"
+STATIC_IP="192.168.199.1/30"
 
 # ── Idempotency guard ─────────────────────────────────────────────────────────
 # If gadget exists and is already bound to the UDC, there is nothing to do.

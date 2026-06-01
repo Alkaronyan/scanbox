@@ -23,12 +23,12 @@
 # MENU OPTIONS
 # ------------
 # The menu maps each number to a pytest -m marker (except "all"):
-#   1) All layers    → pytest tests/ (no marker filter)
-#   2) Layer 1       → pytest -m layer1  (hardware: kernel module, device nodes)
-#   3) Layer 2       → pytest -m layer2  (containers: images, health, devices, env)
-#   4) Layer 3       → pytest -m layer3  (pipeline: GStreamer, MJPEG stream)
-#   5) Layer 4       → pytest -m layer4  (API contract: all endpoints)
-#   6) Layer 5       → pytest -m layer5  (behavioral: brightness, saturation, switching)
+#   0) All layers    → pytest tests/ (no marker filter)
+#   1) Layer 1       → pytest -m layer1  (hardware: kernel module, device nodes)
+#   2) Layer 2       → pytest -m layer2  (containers: images, health, devices, env)
+#   3) Layer 3       → pytest -m layer3  (pipeline: GStreamer, MJPEG stream)
+#   4) Layer 4       → pytest -m layer4  (API contract: all endpoints)
+#   5) Layer 5       → pytest -m layer5  (behavioral: brightness, saturation, switching)
 #
 # REQUIREMENTS
 # ------------
@@ -89,15 +89,15 @@ show_menu() {
     echo "╔══════════════════════════════════════╗"
     echo "║     SCANBOX Test Suite Runner        ║"
     echo "╠══════════════════════════════════════╣"
-    echo "║  1) Run ALL layers                   ║"
-    echo "║  2) Layer 1 — Hardware & host OS     ║"
-    echo "║  3) Layer 2 — Container health       ║"
-    echo "║  4) Layer 3 — GStreamer pipeline     ║"
-    echo "║  5) Layer 4 — API contract           ║"
-    echo "║  6) Layer 5 — Behavioral / visual    ║"
+    echo "║  0) Run ALL layers                   ║"
+    echo "║  1) Layer 1 — Hardware & host OS     ║"
+    echo "║  2) Layer 2 — Container health       ║"
+    echo "║  3) Layer 3 — GStreamer pipeline     ║"
+    echo "║  4) Layer 4 — API contract           ║"
+    echo "║  5) Layer 5 — Behavioral / visual    ║"
     echo "╚══════════════════════════════════════╝"
     echo ""
-    printf "Select an option [1-6]: "
+    printf "Select an option [0-5]: "
 }
 
 # ---------------------------------------------------------------------------
@@ -118,38 +118,38 @@ show_menu
 read -r choice
 
 case "${choice}" in
-    1)
+    0)
         echo ""
         echo "Running all layers..."
         run_pytest
         ;;
-    2)
+    1)
         echo ""
         echo "Running Layer 1 — Hardware & host OS..."
         run_pytest -m layer1
         ;;
-    3)
+    2)
         echo ""
         echo "Running Layer 2 — Container health..."
         run_pytest -m layer2
         ;;
-    4)
+    3)
         echo ""
         echo "Running Layer 3 — GStreamer pipeline..."
         run_pytest -m layer3
         ;;
-    5)
+    4)
         echo ""
         echo "Running Layer 4 — API contract..."
         run_pytest -m layer4
         ;;
-    6)
+    5)
         echo ""
         echo "Running Layer 5 — Behavioral / visual..."
         run_pytest -m layer5
         ;;
     *)
-        echo "Invalid option '${choice}'. Choose a number between 1 and 6." >&2
+        echo "Invalid option '${choice}'. Choose a number between 0 and 5." >&2
         exit 1
         ;;
 esac

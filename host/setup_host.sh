@@ -140,13 +140,13 @@ install -m 0755 "${SCRIPT_DIR}/setup_usb_gadget.sh" /usr/local/sbin/setup_usb_ga
 echo "   ✔ Installed /usr/local/sbin/setup_usb_gadget.sh"
 
 # 5d. Install and enable systemd services
-install -m 0644 "${SCRIPT_DIR}/../systemd/scanbox-gadget.service" /etc/systemd/system/scanbox-gadget.service
-install -m 0644 "${SCRIPT_DIR}/../systemd/scanbox-stack.service"  /etc/systemd/system/scanbox-stack.service
+install -m 0644 "${SCRIPT_DIR}/scanbox-gadget.service" /etc/systemd/system/scanbox-gadget.service
+install -m 0644 "${SCRIPT_DIR}/scanbox.service"        /etc/systemd/system/scanbox.service
 systemctl daemon-reload
 systemctl enable scanbox-gadget.service
-systemctl enable scanbox-stack.service
+systemctl enable scanbox.service
 echo "   ✔ scanbox-gadget.service installed and enabled"
-echo "   ✔ scanbox-stack.service  installed and enabled"
+echo "   ✔ scanbox.service         installed and enabled"
 
 # 5e. Generate .env with KBUILD_DIR for docker-compose
 # docker-compose needs this to mount the kernel build scripts into vid_mux_test.
@@ -179,5 +179,5 @@ echo "     cd ${PROJECT_ROOT}"
 echo "     docker compose up -d --build"
 echo ""
 echo "   Access the web UI (once a device connects via USB):"
-echo "     http://192.168.55.1"
+echo "     http://192.168.199.1"
 echo "======================================================="
