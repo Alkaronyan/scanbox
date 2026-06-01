@@ -52,7 +52,7 @@ h1 { font-size: 1.6rem; letter-spacing: 0.1em; color: #7dd3fc; margin-bottom: 0.
   transition: border-color 0.15s, background 0.15s;
 }
 .scanbox-btn:hover { border-color: #4a5568; }
-.scanbox-btn.dim { opacity: 0.35; cursor: not-allowed; }
+.scanbox-btn.dim, .dim { opacity: 0.35; cursor: not-allowed; }
 
 /* ── Live stream ─────────────────────────────────────────────────────── */
 .stream-container {

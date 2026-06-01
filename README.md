@@ -33,9 +33,18 @@ scanbox/
 │   ├── entrypoint.sh
 │   ├── main.py           # Entry point (GStreamer thread + Flask thread)
 │   ├── switcher.py       # GStreamer pipeline + input-selector
-│   ├── api.py            # Flask REST API + MJPEG stream + Web UI
+│   ├── api.py            # Flask REST API + MJPEG stream + Web UI + camera name detection
 │   ├── templates/index.html
-│   └── static/style.css
+│   └── static/
+│       ├── style.css
+│       └── js/           # UI JavaScript — one file per responsibility
+│           ├── api.js        # All fetch() wrappers (no DOM access)
+│           ├── stream.js     # MJPEG watchdog / auto-reconnect
+│           ├── sources.js    # Source list rendering + switching
+│           ├── controls.js   # V4L2 Camera Config widgets
+│           ├── snapshot.js   # Snapshot capture + preview
+│           ├── ui.js         # Sections, modal, zoom/focus bars, keyboard & wheel events
+│           └── main.js       # Shared globals + init + fetchStatus polling
 ├── Vid_Mux_TEST/         # Mock camera scaffold
 │   ├── Dockerfile
 │   ├── entrypoint.sh

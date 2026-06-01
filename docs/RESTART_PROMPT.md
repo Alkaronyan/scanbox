@@ -37,7 +37,10 @@ scanbox/
 ├── Vid_Mux/              # Production container
 │   ├── Dockerfile, entrypoint.sh, main.py, switcher.py, api.py
 │   ├── templates/index.html
-│   └── static/style.css
+│   └── static/
+│       ├── style.css
+│       └── js/  # load order: api→stream→sources→controls→snapshot→ui→main
+│           ├── api.js, stream.js, sources.js, controls.js, snapshot.js, ui.js, main.js
 ├── Vid_Mux_TEST/         # Mock camera scaffold container
 │   ├── Dockerfile, entrypoint.sh, mock_streamer.py
 ├── scanbox_dhcp/         # DHCP container for USB NCM link
@@ -84,6 +87,7 @@ Vid_Mux production container fully operational.
 * api.py — Flask: REST API + MJPEG /stream + Web UI + V4L2 camera controls; _mjpeg_generator sends freeze frame on timeout (prevents browser disconnection during source switch)
 * templates/index.html — Web UI with auto-reconnect watchdog for MJPEG stream
 * static/style.css — Dark theme
+* static/js/ — 7 JS modules; globals (sources, activeId, zoomLevel, focusLevel, sliderTimers) declared in main.js and shared via window scope; **load order is critical** — ui.js depends on globals from main.js so main.js must load last
 
 **REST API (port 80):**
 * GET  /                          → Web UI
@@ -112,7 +116,7 @@ Vid_Mux production container fully operational.
 **Snapshots:** /home/Alfred/scanbox/snapshots/ (bind-mounted)
 
 **Web UI keyboard shortcuts:**
-Space=snapshot | Tab/←/→=cycle sources | Q/E=focus(fake) | Scroll=zoom(fake) | F1=shortcuts modal
+Space=snapshot | Tab/←/→=cycle sources | Q/E=focus(fake) | Ctrl+Scroll=zoom(fake) | F1=shortcuts modal
 
 ### Dynamic Multi-Camera Support — COMPLETED ✅
 
@@ -144,7 +148,9 @@ SCANBOX_SOURCES=[...]
 **Key files changed:**
 * `scripts/rebuild_vid_mux.sh` — scans all `/dev/v4l/by-id/*-video-index0`, builds `--device` flags, builds and passes `SCANBOX_SOURCES`
 * `Vid_Mux/switcher.py` — reads `SCANBOX_SOURCES`, builds GStreamer pipeline dynamically (N physical + mock); physical cams use MJPEG caps + jpegdec; mock uses `videotestsrc` (not v4l2src — see kernel constraint above)
-* `Vid_Mux/api.py` — `SOURCES` list built from `SCANBOX_SOURCES`; display names derived from labels
+* `Vid_Mux/api.py` — `SOURCES` list built from `SCANBOX_SOURCES`; display names resolved at startup via `_get_camera_card_name()` (sysfs → v4l2-ctl --info fallback); mock always "Mock Camera"; cameras that expose no USB product string (e.g. `046d:0809`) fall back to label-derived name
+* `Vid_Mux/templates/index.html` — loads 7 external JS modules via `<script src>` tags; no inline JS
+* `Vid_Mux/static/js/` — JS split by responsibility (see structure below)
 * `docker-compose.yml` — includes hardcoded `SCANBOX_SOURCES` default for single-camera boot; see comment about `rebuild_vid_mux.sh` for multi-camera
 
 **Note on docker-compose vs rebuild_vid_mux.sh:**

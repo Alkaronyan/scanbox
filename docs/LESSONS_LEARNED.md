@@ -238,3 +238,29 @@ function setFocus(delta) {
 ```
 When debugging an empty UI, open the browser console first — a one-line JS error
 will be far more informative than inspecting the API.
+
+**JS module split: globals must be declared before any module that reads them** *(2026-06-01)*
+When the inline `<script>` was split into 7 separate files loaded via `<script src>` tags,
+`ui.js` contained two top-level calls — `setZoom(0)` and `setFocus(0)` — that read
+`zoomLevel` and `focusLevel`. Those globals are declared with `let` in `main.js`,
+which loads *after* `ui.js`. The `ReferenceError` aborted `ui.js` before it could
+register the `keydown` and `wheel` event listeners, silently breaking all keyboard shortcuts.
+
+Fix: moved the two init calls to `main.js`, after the global declarations. Rule: no
+top-level code in any JS module may read a global that is declared in a later-loaded module.
+In this project `main.js` always loads last and owns all shared globals.
+
+**Camera name detection: many cameras do not expose a USB product string** *(2026-06-01)*
+`/sys/class/video4linux/videoN/name` is not available for devices mapped to high-index
+slots (`video100`, `video101`) that do not appear in the container's sysfs. Use
+`v4l2-ctl -d <dev> --info` and parse the `Card type` line instead.
+
+Even then, some cameras (confirmed: Logitech `046d:0809`) have no string in the USB
+`product` descriptor (`/sys/bus/usb/devices/<port>/product` is empty) and report only
+`UVC Camera (046d:0809)` as their card type. There is no better name available from the
+kernel or V4L2 for these devices without an external USB ID database (not installed).
+
+The detection chain in `api.py._get_camera_card_name()` is:
+1. sysfs `name` file → 2. `v4l2-ctl --info` Card type → 3. label-derived fallback.
+A planned opt-in override: add a `name` field to `SCANBOX_SOURCES` entries so the
+orchestrator can supply a human-readable name for cameras with poor firmware strings.

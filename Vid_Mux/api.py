@@ -49,13 +49,47 @@ def _active_physical_device() -> str | None:
 
 
 def _make_display_name(label: str) -> str:
-    """Derive a human-readable display name from a source label."""
+    """Fallback display name derived from the by-id label (used when sysfs lookup fails)."""
     if label == "mock":
         return "Mock Camera"
-    # Physical cameras carry their by-id label, e.g. "usb-046d_0809_5DD0F8C2"
-    # Strip common prefixes to make them more readable in the UI.
     name = label.replace("usb-", "").replace("_", " ").strip()
     return name if name else label
+
+
+def _get_camera_card_name(device: str) -> str | None:
+    """
+    Return the V4L2 card name for a physical device, or None on failure.
+    Reads /sys/class/video4linux/<dev>/name (no subprocess, instant).
+    Falls back to parsing 'v4l2-ctl --info' if the sysfs file is absent.
+    Never called for mock / virtual sources.
+    """
+    dev_node = os.path.basename(device)  # e.g. "video100"
+    sysfs = f"/sys/class/video4linux/{dev_node}/name"
+    try:
+        with open(sysfs) as f:
+            name = f.read().strip()
+        if name:
+            log.info("API: card name for %s via sysfs: %s", device, name)
+            return name
+    except OSError:
+        pass
+
+    # sysfs unavailable — try v4l2-ctl --info
+    try:
+        r = subprocess.run(
+            ["v4l2-ctl", "-d", device, "--info"],
+            capture_output=True, text=True, timeout=3,
+        )
+        for line in r.stdout.splitlines():
+            if "Card type" in line:
+                name = line.split(":", 1)[-1].strip()
+                if name:
+                    log.info("API: card name for %s via v4l2-ctl: %s", device, name)
+                    return name
+    except Exception as e:
+        log.warning("API: could not query card name for %s: %s", device, e)
+
+    return None
 
 
 def _build_sources_list() -> list[dict]:
@@ -63,6 +97,7 @@ def _build_sources_list() -> list[dict]:
     Build the SOURCES list for the API from the SCANBOX_SOURCES env var.
     Falls back to the hardcoded [video100, video200] pair if env var is absent.
     Returns a list of dicts with keys: id, name, device.
+    Physical camera names are resolved at startup via sysfs / v4l2-ctl.
     """
     raw = os.environ.get("SCANBOX_SOURCES", "")
     if raw:
@@ -74,11 +109,12 @@ def _build_sources_list() -> list[dict]:
                     src_id = int(entry["id"])
                     slot   = entry.get("slot", "")
                     label  = entry.get("label", "")
-                    result.append({
-                        "id":     src_id,
-                        "name":   _make_display_name(label),
-                        "device": slot,
-                    })
+                    is_mock = (not slot) or (slot == "/dev/video200") or (label == "mock")
+                    if is_mock:
+                        name = "Mock Camera"
+                    else:
+                        name = _get_camera_card_name(slot) or _make_display_name(label)
+                    result.append({"id": src_id, "name": name, "device": slot})
                 log.info("API: loaded %d source(s) from SCANBOX_SOURCES.", len(result))
                 return result
         except (json.JSONDecodeError, KeyError, ValueError) as e:
@@ -87,8 +123,8 @@ def _build_sources_list() -> list[dict]:
     # Hardcoded fallback (matches original behaviour)
     log.warning("API: SCANBOX_SOURCES not set — using default [video100, video200].")
     return [
-        {"id": 0, "name": "Physical Camera", "device": "/dev/video100"},
-        {"id": 1, "name": "Mock Camera",     "device": "/dev/video200"},
+        {"id": 0, "name": _get_camera_card_name("/dev/video100") or "Physical Camera", "device": "/dev/video100"},
+        {"id": 1, "name": "Mock Camera", "device": "/dev/video200"},
     ]
 
 

@@ -54,10 +54,48 @@ Extracts a frame from the active video stream and stores it on disk.
 
 ---
 
-## 3. User Interface (UI) Decoupling
+## 3. User Interface (Web UI)
 
-To satisfy the physical control requirements (Raspberry Pi keyboard, direction arrows, and shortcuts), the architecture delegates peripheral event capturing outside the main application:
+The web UI is a single-page application served by Flask at `GET /`. It connects to the MJPEG stream, calls the REST API for state changes, and renders V4L2 controls dynamically. No frontend framework — plain JS and CSS.
 
-1.  A daemon script on the host (or a peripheral micro-container) listens to binary events from the physical Linux keyboard (`/dev/input/eventX`).
-2.  Upon detecting a `Right / Left Arrow` event or the capture shortcut, this daemon translates the physical keystroke into an HTTP request (`curl` / `requests`) targeting Container 1's API.
-3.  **Result:** The Switcher remains completely agnostic of how the command was generated, ensuring full interchangeability of the control hardware.
+### JavaScript module structure
+
+All JS lives in `static/js/`. Files are loaded in dependency order via `<script src>` tags; there are no ES modules or bundlers. Globals (`sources`, `activeId`, `zoomLevel`, `focusLevel`, `sliderTimers`) are declared in `main.js` and accessed by earlier files through the `window` scope.
+
+**Load order is critical:** `ui.js` calls functions and reads globals defined in modules that load before and after it. Any top-level code in a module that reads a global from a later-loaded module will throw a `ReferenceError` and silently abort the rest of that module — including event listener registration.
+
+| File | Responsibility |
+|---|---|
+| `api.js` | All `fetch()` wrappers. No DOM access. |
+| `stream.js` | MJPEG `<img>` auto-reconnect watchdog. |
+| `sources.js` | Source list rendering, `selectSource()`, `cycleSource()`. |
+| `controls.js` | V4L2 Camera Config widgets (slider / toggle / menu), reset. |
+| `snapshot.js` | Snapshot POST + preview display. |
+| `ui.js` | Section collapse, modal, fake zoom/focus bars, keyboard and Ctrl+Scroll wheel events. |
+| `main.js` | Shared global declarations, init calls, `fetchStatus()` polling (every 3 s). |
+
+### Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| `Space` | Take snapshot |
+| `Tab` / `←` `→` | Cycle / select video source |
+| `Q` / `E` | Focus − / + (placeholder) |
+| `Ctrl + Scroll` | Zoom in / out (placeholder) |
+| `F1` | Open / close shortcuts modal |
+
+### Camera Controls section
+
+Starts **collapsed** by default (`.section-body.collapsed`). All PTZ placeholder buttons carry the `.dim` class (opacity 0.35, cursor not-allowed) because the PTZ API is not yet implemented.
+
+### Camera name resolution
+
+Physical camera display names are resolved at container startup by `_get_camera_card_name()` in `api.py`:
+
+1. Read `/sys/class/video4linux/<dev>/name` (instant, no subprocess).
+2. If absent, parse `v4l2-ctl -d <dev> --info` for the `Card type` line.
+3. If both fail, fall back to the label-derived name (`_make_display_name(label)`).
+
+The mock source always uses the hardcoded name `"Mock Camera"` — detection is never attempted for it.
+
+**Known limitation:** Some cameras (e.g. Logitech `046d:0809`) do not expose a USB product string and report only a generic `UVC Camera (VID:PID)` card name. A planned enhancement is an optional `name` field in `SCANBOX_SOURCES` for manual overrides.
