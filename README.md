@@ -11,7 +11,7 @@ Everything that can run in a container does. The host OS stays minimal. Only Doc
 
 | Container | Purpose |
 |---|---|
-| **Vid_Mux** | GStreamer pipeline, Flask REST API, MJPEG stream, Web UI. Port 5000. |
+| **Vid_Mux** | GStreamer pipeline, Flask REST API, MJPEG stream, Web UI. Port 80. |
 | **Vid_Mux_TEST** | Compiles v4l2loopback v0.15.3 against the host kernel, creates /dev/video200, feeds a live SMPTE test pattern into it. |
 | **scanbox_dhcp** | dnsmasq DHCP server on usb0. Assigns IP to the connected Windows PC automatically. |
 
@@ -87,8 +87,8 @@ Detects cameras dynamically, rebuilds the vid_mux image, and relaunches the full
 ### Access the web UI
 | Connection | URL |
 |---|---|
-| USB cable (direct) | http://192.168.55.1:5000 |
-| WiFi / LAN | http://\<pi-ip\>:5000 |
+| USB cable (direct) | http://192.168.55.1 |
+| WiFi / LAN | http://\<pi-ip\> |
 
 ## Boot Sequence
 
@@ -98,7 +98,7 @@ scanbox.service         →  scripts/rebuild_vid_mux.sh
     ├── scanbox_dhcp     →  DHCP server on usb0
     ├── vid_mux_test     →  compiles v4l2loopback → /dev/video200 (healthcheck)
     │    └── waits for /dev/video200 to appear (polls every 2s, 120s timeout)
-    └── vid_mux          →  built with dynamically detected cameras → Flask :5000
+    └── vid_mux          →  built with dynamically detected cameras → Flask 
 ```
 
 `scanbox.service` replaces the old `scanbox-stack.service`. Key advantage: cameras are detected dynamically at every boot, so plugging in a new camera is pick-up-and-go.

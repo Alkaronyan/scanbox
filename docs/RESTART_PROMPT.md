@@ -19,8 +19,8 @@ We need to resume the project precisely where we left off. Act as our senior sof
 3. **Deterministic Device Mapping**:
    * Input 0 (Physical): /dev/video100 ← /dev/v4l/by-id/usb-046d_0809_5DD0F8C2-video-index0 (Logitech C270)
    * Input 1 (Mock): /dev/video200 ← created by Vid_Mux_TEST via v4l2loopback video_nr=200
-   * Control: Python Flask REST API on port 5000
-   * Output: MJPEG HTTP stream at /stream (port 5000) — accessible over WiFi/LAN or USB NCM direct link
+   * Control: Python Flask REST API on port 80
+   * Output: MJPEG HTTP stream at /stream (port 80) — accessible over WiFi/LAN or USB NCM direct link
 4. **Code Standards**: discussions in Spanish or English, all code/comments/files in English.
 5. **Startup orchestration**: docker-compose.yml is the single source of truth for all containers. scanbox-stack.service (systemd) runs `docker compose up -d` at boot, respecting depends_on ordering.
 
@@ -85,7 +85,7 @@ Vid_Mux production container fully operational.
 * templates/index.html — Web UI with auto-reconnect watchdog for MJPEG stream
 * static/style.css — Dark theme
 
-**REST API (port 5000):**
+**REST API (port 80):**
 * GET  /                          → Web UI
 * GET  /stream                    → Live MJPEG stream
 * GET  /api/v1/status             → active source info
@@ -157,7 +157,7 @@ USB NCM gadget + DHCP + full boot automation fully operational.
 **USB NCM Network (192.168.55.0/24):**
 * Pi (device side) : 192.168.55.1 — assigned by setup_usb_gadget.sh
 * Windows (host)   : 192.168.55.100-200 — assigned by scanbox_dhcp container (dnsmasq)
-* Web UI accessible over USB at http://192.168.55.1:5000 — Windows 11 native driver, plug & play
+* Web UI accessible over USB at http://192.168.55.1 — Windows 11 native driver, plug & play
 
 **Boot sequence (fully automatic):**
 ```
@@ -198,12 +198,12 @@ Located in `tests/`. All scripts are executable and self-contained.
 # Individual suites:
 ./tests/test_cameras.sh     # Per-source: device node in container, switch, snapshot > 5 KB
 ./tests/test_api.sh         # All REST API endpoints (requires vid_mux running)
-./tests/test_containers.sh  # Containers running (scanbox_dhcp, vid_mux_test, vid_mux), port 5000
+./tests/test_containers.sh  # Containers running (scanbox_dhcp, vid_mux_test, vid_mux), port 80
 ```
 
 Each script prints PASS/FAIL per check and exits 0 (all pass) or 1 (any fail).
 `run_all.sh` prints a summary table and exits 0 only if all suites pass.
-`API_BASE` env var overrides the default `http://localhost:5000`.
+`API_BASE` env var overrides the default `http://localhost`.
 Source list is read dynamically from `GET /api/v1/status` — no hardcoded IDs.
 
 Acknowledge this context briefly in Spanish and propose the next concrete step.

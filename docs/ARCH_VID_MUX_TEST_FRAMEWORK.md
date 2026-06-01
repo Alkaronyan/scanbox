@@ -35,7 +35,7 @@ The following schematic represents the execution isolation, data pipelines, cont
 |   |         (Switch Pad)                 │                                                   |   |
 |   |               │                      │ (Network Stream)                                  |   |
 |   |   [ Signaling Control Service ]      │  RTP / H264                                       |   |
-|   |   Python REST API (Port 5000) ───────┘  UDP Port 9000                                    |   |
+|   |   Python REST API (Port 80) ───────┘  UDP Port 9000                                    |   |
 |   +──────────────────────────────────────────────────────────────────────────────────────────+   |
 |                                                                          │                       |
 |                                                                          │                       |
@@ -48,7 +48,7 @@ The following schematic represents the execution isolation, data pipelines, cont
 |   |   (/dev/input/eventX)               (Listens to Keypress)            │                   |
 |   |                                               │                      │                   |
 |   |                                               ▼ (HTTP POST)          │                   |
-|   |                                         localhost:5000               │                   |
+|   |                                         localhost               │                   |
 +───┼───────────────────────────────────────────────┼──────────────────────┼───────────────────+
     │                                               │                      │
     │ LOCAL NETWORK (LAN / WLAN)                    │                      │

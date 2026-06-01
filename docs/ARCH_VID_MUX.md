@@ -27,7 +27,7 @@ The processing engine uses GStreamer for low-level video capture, synchronizatio
 A lightweight microservice runs on a secondary thread to act as the external control interface for the container.
 
 *   **Protocol:** HTTP/JSON.
-*   **Default Port:** `5000`.
+*   **Default Port:** `80`.
 *   **Mission:** Receive external commands, validate the payload, modify global state variables, and notify the GStreamer thread to change the active Pad on the `input-selector` element.
 
 ---

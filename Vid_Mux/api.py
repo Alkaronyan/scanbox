@@ -352,4 +352,4 @@ if __name__ == "__main__":
         level=logging.INFO,
         format='[api] %(asctime)s %(levelname)s: %(message)s'
     )
-    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+    app.run(host="0.0.0.0", port=80, debug=False, threaded=True)

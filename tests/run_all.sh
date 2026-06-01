@@ -12,7 +12,7 @@
 #
 # Usage:
 #   ./tests/run_all.sh
-#   API_BASE=http://192.168.55.1:5000 ./tests/run_all.sh   # test over USB NCM
+#   API_BASE=http://192.168.55.1 ./tests/run_all.sh   # test over USB NCM
 #
 # Exit 0 = all suites passed.  Exit 1 = one or more suites failed.
 

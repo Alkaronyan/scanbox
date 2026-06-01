@@ -40,7 +40,7 @@ services:
 
   # ─────────────────────────────────────────────────────────────────────────
   # Production video switcher.
-  # Flask REST API + MJPEG stream on port 5000 (host network).
+  # Flask REST API + MJPEG stream on port 80 (host network).
   # Waits for vid_mux_test to be healthy (video200 exists) before starting.
   #
   # MULTI-CAMERA NOTE:

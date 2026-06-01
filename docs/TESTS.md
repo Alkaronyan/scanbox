@@ -4,9 +4,9 @@ All test scripts live in `tests/`. Each is a self-contained bash script that pri
 
 **Requirements for all suites:** the full stack must be running — either started manually via `./scripts/rebuild_vid_mux.sh` or automatically at boot via `scanbox.service`. Physical cameras must be connected.
 
-**Env var:** `API_BASE` overrides the default `http://localhost:5000` for all suites.
+**Env var:** `API_BASE` overrides the default `http://localhost` for all suites.
 ```bash
-API_BASE=http://192.168.55.1:5000 ./tests/run_all.sh   # test over USB NCM link
+API_BASE=http://192.168.55.1 ./tests/run_all.sh   # test over USB NCM link
 ```
 
 ---
@@ -74,7 +74,7 @@ Source list is read dynamically from `GET /api/v1/status`.
 
 ```bash
 ./tests/test_api.sh
-API_BASE=http://192.168.55.1:5000 ./tests/test_api.sh
+API_BASE=http://192.168.55.1 ./tests/test_api.sh
 ```
 
 ---
@@ -86,7 +86,7 @@ API_BASE=http://192.168.55.1:5000 ./tests/test_api.sh
 **Checks:**
 1. **Docker images** — `vid_mux` and `vid_mux_test` images exist
 2. **Running containers** — `scanbox_dhcp`, `vid_mux_test`, and `vid_mux` are all running
-3. **Port 5000** — Flask is listening (checked via `ss` or HTTP probe)
+3. **Port 80** — Flask is listening (checked via `ss` or HTTP probe)
 4. **Device mappings** — for each physical source reported by `GET /api/v1/status`, verifies the device path is accessible inside the `vid_mux` container via `docker exec`. Mock/synthetic sources (no device or `/dev/video200`) are skipped.
 
 ```bash

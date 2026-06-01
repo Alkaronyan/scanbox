@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-API_BASE="${API_BASE:-http://localhost:5000}"
+API_BASE="${API_BASE:-http://localhost}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SNAPSHOTS_DIR="${SCRIPT_DIR}/../snapshots"
 

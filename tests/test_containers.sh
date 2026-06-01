@@ -4,7 +4,7 @@
 # Checks performed:
 #   1. Docker images vid_mux and vid_mux_test exist
 #   2. Containers scanbox_dhcp, vid_mux_test, and vid_mux are running
-#   3. Port 5000 is listening (Flask API)
+#   3. Port 80 is listening (Flask API)
 #   4. Physical camera device nodes are accessible inside the vid_mux container
 #      (mock/synthetic sources are skipped — vid_mux uses videotestsrc internally)
 #
@@ -13,13 +13,13 @@
 #
 # Usage:
 #   ./tests/test_containers.sh
-#   API_BASE=http://192.168.55.1:5000 ./tests/test_containers.sh
+#   API_BASE=http://192.168.55.1 ./tests/test_containers.sh
 #
 # Exit 0 = all checks passed.  Exit 1 = one or more checks failed.
 
 set -euo pipefail
 
-API_BASE="${API_BASE:-http://localhost:5000}"
+API_BASE="${API_BASE:-http://localhost}"
 
 PASS=0
 FAIL=0
@@ -53,15 +53,15 @@ for CONTAINER in scanbox_dhcp vid_mux_test vid_mux; do
     fi
 done
 
-# ── 3. Port 5000 is listening ─────────────────────────────────────────────────
+# ── 3. Port 80 is listening ─────────────────────────────────────────────────
 echo ""
-echo "[3] Checking port 5000..."
-if ss -tlnp 2>/dev/null | grep -q ':5000'; then
-    pass "Port 5000 is listening"
+echo "[3] Checking port 80..."
+if ss -tlnp 2>/dev/null | grep -q ':80'; then
+    pass "Port 80 is listening"
 elif curl -s --max-time 3 "${API_BASE}/api/v1/status" >/dev/null 2>&1; then
-    pass "Port 5000 is responding to HTTP requests"
+    pass "Port 80 is responding to HTTP requests"
 else
-    fail "Port 5000 is not accessible"
+    fail "Port 80 is not accessible"
 fi
 
 # ── 4. Physical camera devices visible inside vid_mux ────────────────────────
