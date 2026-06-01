@@ -1,6 +1,40 @@
 # Testing Environment and Mocking Infrastructure Specification
 
-This document describes the temporary testing infrastructure designed to validate the Switcher Module on a physical Raspberry Pi. It simulates the real SCANBOX project conditions without requiring the USB webcam emulator module (`configfs` / `usb_f_uvc`) or the second physical camera hardware.
+This document describes the testing infrastructure designed to validate the Switcher Module on a physical Raspberry Pi. It simulates the real SCANBOX project conditions without requiring the USB webcam emulator module (`configfs` / `usb_f_uvc`) or the second physical camera hardware.
+
+## Test Suite Location
+
+The pytest test suite lives inside the `Vid_Mux_TEST/` directory alongside the mock camera scaffold:
+
+```
+Vid_Mux_TEST/
+├── Dockerfile         # image used by both vid_mux_test and test_runner services
+├── entrypoint.sh      # starts mock camera when run as vid_mux_test
+├── mock_streamer.py   # SMPTE stream writer
+└── tests/             # 5-layer pytest suite (33 tests)
+    ├── pytest.ini
+    ├── conftest.py
+    ├── utils/
+    ├── layer1_host/
+    ├── layer2_containers/
+    ├── layer3_pipeline/
+    ├── layer4_api/
+    └── layer5_behavior/
+```
+
+The `test_runner` service in `docker-compose.yml` reuses the same Docker image as
+`vid_mux_test` but overrides the entrypoint to run pytest. The project directory
+is bind-mounted at `/home/Alfred/scanbox` inside the container (same path as the
+host) so snapshot file paths resolve without modification.
+
+Run the suite with:
+```bash
+./run_tests.sh          # interactive menu
+./run_tests.sh -m layer3  # single layer
+docker compose --profile test run --rm --no-deps test_runner  # direct
+```
+
+See [docs/TESTS.md](TESTS.md) for the full test reference.
 
 ## 1. System Architecture Diagram
 

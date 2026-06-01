@@ -26,6 +26,18 @@ RUN apt-get update && apt-get install -y \
     v4l-utils \
     && rm -rf /var/lib/apt/lists/*
 
+# Test-runner dependencies — installed in a separate layer so the GStreamer
+# build cache above is not invalidated when test tooling changes.
+# docker.io  : provides the docker CLI so Layer 2 tests can call `docker exec`
+# ffmpeg     : used by image_analysis.py for pixel-level JPEG comparison
+# python3-pytest / python3-requests : pytest runner and HTTP client for the suite
+RUN apt-get update && apt-get install -y \
+    docker.io \
+    ffmpeg \
+    python3-pytest \
+    python3-requests \
+    && rm -rf /var/lib/apt/lists/*
+
 # Set the internal working directory.
 # NOTE: must NOT live under /usr/src — at runtime the host's /usr/src is
 # bind-mounted read-only here (to expose kernel headers for v4l2loopback),

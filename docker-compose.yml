@@ -23,6 +23,7 @@ services:
   # ─────────────────────────────────────────────────────────────────────────
   vid_mux_test:
     build: ./Vid_Mux_TEST
+    image: scanbox_vid_mux_test
     container_name: vid_mux_test
     restart: always
     privileged: true
@@ -78,3 +79,51 @@ services:
         condition: service_started
       vid_mux_test:
         condition: service_healthy
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Test runner — pytest suite (all 5 layers) executed inside a container.
+  # Uses the same image as vid_mux_test (already has GStreamer, Python, ffmpeg,
+  # pytest, requests, and the docker CLI) but overrides the entrypoint to run
+  # pytest instead of the mock streamer.
+  #
+  # Why this works for every layer:
+  #   Layer 1 (hardware): Linux containers share the host kernel — lsmod reads
+  #     /proc/modules from the real kernel. privileged:true removes the device
+  #     cgroup whitelist so /dev/video* are visible. /dev/v4l is bind-mounted to
+  #     expose the udev-managed by-id symlinks that don't appear automatically.
+  #   Layer 2 (containers): /var/run/docker.sock gives the docker CLI full access
+  #     to the host Docker daemon, same as running on the host.
+  #   Layers 3-5 (pipeline, API, behavior): network_mode:host reaches the Flask
+  #     API on localhost:80. The project directory is bind-mounted at the same
+  #     host path so snapshot file paths in conftest.py resolve without changes.
+  #
+  # Usage (stack must already be up):
+  #   docker compose --profile test run --rm test_runner
+  #
+  # profile:test keeps this service out of `docker compose up -d`.
+  # ─────────────────────────────────────────────────────────────────────────
+  test_runner:
+    image: scanbox_vid_mux_test
+    container_name: test_runner
+    restart: "no"
+    privileged: true
+    network_mode: host
+    profiles:
+      - test
+    entrypoint: ["python3", "-m", "pytest", "tests/", "-v", "--tb=short"]
+    working_dir: /home/Alfred/scanbox/Vid_Mux_TEST
+    volumes:
+      # Full project at the same path as the host so all fixture paths resolve.
+      - /home/Alfred/scanbox:/home/Alfred/scanbox
+      # Docker socket — lets Layer 2 tests call `docker exec / inspect / ps`.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # udev-managed by-id symlinks — not exposed by --privileged alone; needed
+      # for Layer 1 physical camera enumeration tests.
+      - /dev/v4l:/dev/v4l:ro
+    environment:
+      - SCANBOX_API_URL=http://localhost:80
+    depends_on:
+      vid_mux_test:
+        condition: service_healthy
+      vid_mux:
+        condition: service_started

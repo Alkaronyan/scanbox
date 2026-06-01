@@ -75,6 +75,50 @@ gst-launch-1.0 v4l2src device=/dev/video200 io-mode=rw num-buffers=3 ! fakesink
 never reads from v4l2loopback. `vid_mux_test` still runs and keeps `/dev/video200`
 alive as a boot-readiness signal, but vid_mux does not need the device mapped.
 
+**GStreamer appsink backpressure freezes `_last_frame` after stream consumer disconnects** *(2026-06-01)*
+When `emit-signals=true, max-buffers=2, drop=true` is set on the appsink, `_on_new_sample`
+stops being called as soon as the buffer fills up and no downstream consumer is draining it.
+The MJPEG generator (`_mjpeg_generator`) was the only consumer of `frame_queue`. Once a
+browser tab closed, the generator exited, the queue filled, and the appsink stalled.
+`_last_frame` was frozen at whatever frame was last written — all subsequent snapshot
+requests returned the same identical JPEG, confirmed by identical MD5 hashes across 15
+consecutive snapshots.
+
+Fix: add a permanent background daemon thread (`frame_refresher`) in `api.py` that
+continuously drains `frame_queue` regardless of whether any stream client is connected.
+The MJPEG generator now reads from `_last_frame` (protected by a lock) rather than
+competing with the refresher for queue items. Started in `main.py` after the GStreamer
+thread.
+
+**`docker compose restart` does not use a newly built image** *(2026-06-01)*
+`docker compose restart vid_mux` reuses the existing container, which was created from
+the old image. The new image is never consulted. To pick up a rebuilt image:
+```bash
+docker stop vid_mux && docker rm vid_mux && docker compose up -d --no-deps vid_mux
+# or force compose to rebuild and recreate:
+docker compose up -d --no-deps --build vid_mux
+```
+Symptom: code changes appear to have no effect after a restart; log lines from new code
+never appear.
+
+**ffmpeg `blend` filter requires identical input dimensions** *(2026-06-01)*
+The `blend=all_mode=difference` filter fails silently and produces no `YAVG` output when
+the two input videos have different resolutions (e.g. physical camera at 1920×1080 vs
+mock source at 640×480). `frames_are_different()` always returned False, making all
+switching tests pass incorrectly.
+
+Fix: normalize both inputs to a common resolution before blending:
+```
+[0:v]scale=640:480[a];[1:v]scale=640:480[b];[a][b]blend=all_mode=difference,signalstats
+```
+
+**Snapshot filename collision at 1-second resolution** *(2026-06-01)*
+The default snapshot filename format is `snap_YYYY_MM_DD__HH_MM_SS.jpg` (one-second
+precision). Two snapshots taken within the same second overwrite each other, producing
+a zero-difference result in frame comparison tests. Fixed by: (a) using the named
+filename API parameter for test snapshots (`{"filename": "descriptive_name.jpg"}`), and
+(b) keeping a `time.sleep(1.1)` between paired snapshots as a belt-and-suspenders guard.
+
 ---
 
 ## Section 2 — Docker & Container Management

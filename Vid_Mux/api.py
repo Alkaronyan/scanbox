@@ -20,6 +20,7 @@ import queue
 import subprocess
 import re
 import threading
+import time
 from flask import Flask, request, jsonify, send_file, render_template, Response
 import switcher
 
@@ -30,10 +31,33 @@ app = Flask(__name__)
 SNAPSHOT_DIR = "/exports/snapshots"
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 
-# Last frame cache — written by the MJPEG stream generator, read by snapshot.
-# Prevents snapshot from competing with an active stream connection for queue items.
+# Last frame cache — continuously refreshed by the background frame refresher
+# thread, consumed by both the MJPEG generator and the snapshot endpoint.
 _last_frame: bytes | None = None
 _last_frame_lock = threading.Lock()
+
+
+def start_frame_refresher():
+    """
+    Background daemon thread that drains frame_queue and keeps _last_frame fresh.
+
+    Running a permanent consumer guarantees that the GStreamer appsink always
+    has a downstream receiver. Without one, the appsink buffer fills up and the
+    pipeline stalls due to backpressure — causing all snapshots to return the
+    same stale frame even after switching sources.
+    """
+    def _run():
+        global _last_frame
+        while True:
+            try:
+                frame = switcher.frame_queue.get(timeout=2.0)
+                with _last_frame_lock:
+                    _last_frame = frame
+            except queue.Empty:
+                pass
+    t = threading.Thread(target=_run, daemon=True, name="frame-refresher")
+    t.start()
+    log.info("Frame refresher started.")
 
 def _active_physical_device() -> str | None:
     """Return the device path of the currently active source, or None if it has no real V4L2
@@ -256,9 +280,15 @@ def _last_snapshot() -> str | None:
     return files[-1] if files else None
 
 
-def _save_snapshot(jpeg_bytes: bytes) -> str:
-    ts = datetime.datetime.now().strftime("%Y_%m_%d__%H_%M_%S")
-    path = os.path.join(SNAPSHOT_DIR, f"snap_{ts}.jpg")
+def _save_snapshot(jpeg_bytes: bytes, filename: str | None = None) -> str:
+    if filename:
+        safe = re.sub(r'[^\w\-.]', '_', filename)
+        if not safe.lower().endswith('.jpg'):
+            safe += '.jpg'
+        path = os.path.join(SNAPSHOT_DIR, safe)
+    else:
+        ts = datetime.datetime.now().strftime("%Y_%m_%d__%H_%M_%S")
+        path = os.path.join(SNAPSHOT_DIR, f"snap_{ts}.jpg")
     with open(path, "wb") as f:
         f.write(jpeg_bytes)
     return path
@@ -268,22 +298,18 @@ def _save_snapshot(jpeg_bytes: bytes) -> str:
 # ---------------------------------------------------------------------------
 
 def _mjpeg_generator():
-    global _last_frame
+    # The frame refresher thread keeps _last_frame always current — read from
+    # it directly rather than competing with the refresher for queue items.
+    # Sleep caps stream output at ~30fps to avoid overwhelming slow clients.
     boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
     while True:
-        try:
-            frame = switcher.frame_queue.get(timeout=2.0)
-            with _last_frame_lock:
-                _last_frame = frame
-        except queue.Empty:
-            # During source switches there is a brief gap with no new frames.
-            # Send the last known frame (freeze) instead of an empty part —
-            # empty multipart parts break browser MJPEG connections.
-            with _last_frame_lock:
-                frame = _last_frame
-            if frame is None:
-                continue
+        with _last_frame_lock:
+            frame = _last_frame
+        if frame is None:
+            time.sleep(0.033)
+            continue
         yield boundary + frame + b"\r\n"
+        time.sleep(0.033)
 
 # ---------------------------------------------------------------------------
 # Routes
@@ -327,17 +353,14 @@ def set_source():
 
 @app.post("/api/v1/snapshot")
 def snapshot():
-    # Use the last frame cached by the stream generator (avoids competing with
-    # an active MJPEG stream connection that drains the queue continuously).
+    # _last_frame is always fresh (frame refresher thread updates it continuously).
     with _last_frame_lock:
         frame = _last_frame
     if frame is None:
-        # No stream consumer active — pull directly from the queue.
-        try:
-            frame = switcher.frame_queue.get(timeout=3.0)
-        except queue.Empty:
-            return jsonify({"status": "error", "message": "No frame available"}), 504
-    path = _save_snapshot(frame)
+        return jsonify({"status": "error", "message": "No frame available"}), 504
+    data = request.get_json(silent=True) or {}
+    filename = data.get("filename") or None
+    path = _save_snapshot(frame, filename)
     log.info("Snapshot saved: %s", path)
     return jsonify({"status": "success", "file_path": path, "filename": os.path.basename(path)})
 
