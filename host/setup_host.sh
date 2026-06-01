@@ -12,7 +12,9 @@
 #        compile the v4l2loopback module against the RUNNING host kernel and
 #        insert it into the shared kernel. The headers must physically exist on
 #        the host because the container mounts /usr/src and /lib/modules (ro).
-#     3. git -> to clone/update this repository on the host.
+#     3. Host system utilities -> udev, kmod, procps — things that a minimal
+#        distro (debootstrap --variant=minbase) may omit but SCANBOX needs.
+#     4. git -> to clone/update this repository on the host.
 #
 #   Anything else (GStreamer, Python, v4l-utils, DKMS, build toolchain,
 #   v4l2loopback sources) is provided INSIDE the containers and must NOT be
@@ -40,12 +42,41 @@ echo "   Running kernel              : ${KREL}"
 echo "======================================================="
 
 # ---- 1. Base utilities -------------------------------------------------------
-echo "📦 [1/4] Installing base utilities (git, curl, ca-certificates)..."
+echo "📦 [1/5] Installing base host utilities..."
+
+# These are REQUIRED by the SCANBOX stack on the host.
+# Minimal distros (e.g. debootstrap --variant=minbase) omit them:
+#   - udev      : creates /dev/v4l/by-id/ symlinks (deterministic camera mapping)
+#   - kmod      : provides modprobe, lsmod (used by setup_usb_gadget.sh & entrypoints)
+#   - procps    : provides ps (used by healthchecks and vid_mux_test wait logic)
+#   - ca-certificates : required by curl to fetch Docker install script over HTTPS
+#   - curl, git : standard tooling
 apt-get update
-apt-get install -y ca-certificates curl git
+apt-get install -y \
+    ca-certificates \
+    curl \
+    git \
+    kmod \
+    procps \
+    udev
+
+# ---- 2. Ensure configfs is mounted -------------------------------------------
+# Required by setup_usb_gadget.sh to create the USB NCM gadget.
+# systemd usually mounts it, but minimal distros may not.
+echo "🔌 Checking configfs mount..."
+if ! mountpoint -q /sys/kernel/config; then
+    echo "   Mounting configfs..."
+    mount -t configfs none /sys/kernel/config
+    # Persist across reboots
+    if ! grep -q configfs /etc/fstab 2>/dev/null; then
+        echo "none /sys/kernel/config configfs defaults 0 0" >> /etc/fstab
+        echo "   ✔ Added configfs to /etc/fstab"
+    fi
+fi
+echo "   ✔ configfs available at /sys/kernel/config"
 
 # ---- 2. Kernel headers (REQUIRED for in-container v4l2loopback build) --------
-echo "🧩 [2/4] Installing kernel headers for ${KREL}..."
+echo "🧩 [3/5] Installing kernel headers for ${KREL}..."
 # On modern Raspberry Pi OS the meta-packages pull the correct per-board headers.
 # We try the known candidates and verify the build symlink afterwards.
 HEADER_CANDIDATES=(
@@ -71,9 +102,9 @@ echo "   ✔ Headers reachable at /lib/modules/${KREL}/build"
 
 # ---- 3. Docker Engine --------------------------------------------------------
 if command -v docker >/dev/null 2>&1; then
-    echo "🐳 [3/4] Docker already installed: $(docker --version)"
+    echo "🐳 [4/5] Docker already installed: $(docker --version)"
 else
-    echo "🐳 [3/4] Installing Docker Engine via the official convenience script..."
+    echo "🐳 [4/5] Installing Docker Engine via the official convenience script..."
     # The convenience script auto-detects the distro (incl. Raspberry Pi OS).
     curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
     sh /tmp/get-docker.sh
@@ -90,7 +121,7 @@ if [ "${TARGET_USER}" != "root" ]; then
 fi
 
 # ---- 4. Docker Compose plugin ------------------------------------------------
-echo "🐳 [4/5] Checking Docker Compose plugin..."
+echo "🐳 [5/6] Checking Docker Compose plugin..."
 if docker compose version >/dev/null 2>&1; then
     echo "   ✔ Docker Compose available: $(docker compose version)"
 else
@@ -106,7 +137,7 @@ fi
 # kernel namespace — which would defeat the containerization model entirely.
 #
 # See docs/ARCH_USB_GADGET.md for the full rationale.
-echo "🔌 [5/5] Configuring USB NCM gadget (Phase 3)..."
+echo "🔌 [6/6] Configuring USB NCM gadget (Phase 3)..."
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"

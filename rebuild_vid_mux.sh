@@ -103,6 +103,24 @@ while [[ ! -e /dev/video200 ]]; do
 done
 echo "  /dev/video200 is present."
 
+# Wait for mock_streamer process inside vid_mux_test to be running.
+# The container has no Docker healthcheck when launched via docker run,
+# so we check for the process directly.
+echo "  Waiting for mock_streamer inside vid_mux_test..."
+TIMEOUT=60
+ELAPSED=0
+while ! docker exec vid_mux_test sh -c 'ps aux | grep -q "[m]ock_streamer"' 2>/dev/null; do
+    if [[ "${ELAPSED}" -ge "${TIMEOUT}" ]]; then
+        echo "WARNING: mock_streamer not found after ${TIMEOUT}s." >&2
+        echo "         Continuing anyway — mock may not be streaming yet." >&2
+        break
+    fi
+    sleep 2
+    ELAPSED=$(( ELAPSED + 2 ))
+    echo "  ...waiting for mock_streamer ${ELAPSED}s"
+done
+echo "  mock_streamer is running inside vid_mux_test."
+
 # ── 4. Scan ALL physical cameras ─────────────────────────────────────────────
 echo ""
 echo "[4] Camera Discovery"
@@ -194,6 +212,7 @@ echo "  Launching vid_mux..."
 mkdir -p snapshots
 
 docker run -d --name vid_mux --network=host \
+    --restart=on-failure \
     "${DEVICE_FLAGS[@]}" \
     -e SCANBOX_SOURCES="${SOURCES_JSON}" \
     -v "${PROJECT_ROOT}/snapshots:/exports/snapshots" \

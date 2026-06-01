@@ -294,6 +294,54 @@ Fix: moved the two init calls to `main.js`, after the global declarations. Rule:
 top-level code in any JS module may read a global that is declared in a later-loaded module.
 In this project `main.js` always loads last and owns all shared globals.
 
+---
+
+## Section 8 — Boot Reliability & Host Provisioning
+
+**`docker run` without `--restart` leaves dead containers forever** *(2026-06-01)*
+If `vid_mux` crashes at startup (e.g. `/dev/video100` not ready, or a transient GStreamer pipeline error), the container stays in `Exited` state and never recovers. With `--restart=on-failure`, Docker auto-restarts it with exponential backoff. Apply to all critical containers.
+
+**Docker healthcheck does not exist when using `docker run` instead of compose** *(2026-06-01)*
+`rebuild_vid_mux.sh` launches `vid_mux_test` with `docker run`, not `docker compose`. The healthcheck defined in `docker-compose.yml` is ignored, so `container_healthy vid_mux_test` never returns true. Instead, verify the process directly with `docker exec vid_mux_test sh -c 'ps aux | grep "[m]ock_streamer"'`.
+
+**`setup_usb_gadget.sh` does not auto-update when the source file is edited** *(2026-06-01)*
+`host/setup_host.sh` copies `setup_usb_gadget.sh` to `/usr/local/sbin/` via `install`. If the source file is edited after initial installation, it must be copied manually:
+```bash
+sudo cp host/setup_usb_gadget.sh /usr/local/sbin/setup_usb_gadget.sh
+```
+If the gadget is already active, it must be torn down first to bypass the idempotency guard:
+```bash
+echo "" | sudo tee /sys/kernel/config/usb_gadget/scanbox/UDC
+sudo rm -rf /sys/kernel/config/usb_gadget/scanbox
+sudo /usr/local/sbin/setup_usb_gadget.sh
+```
+
+**Configfs is not always mounted on minimal distros** *(2026-06-01)*
+On full Raspberry Pi OS, systemd mounts `configfs` automatically. On minimal distros (debootstrap --variant=minbase), it does not. `setup_usb_gadget.sh` needs `/sys/kernel/config` to create the USB gadget. `setup_host.sh` now mounts it explicitly and adds it to `/etc/fstab`.
+
+**`udev` is absent on minimal distros — required for `/dev/v4l/by-id/`** *(2026-06-01)*
+`rebuild_vid_mux.sh` scans `/dev/v4l/by-id/*-video-index0` to detect cameras. On distros without udev (or using busybox-mdev instead), these symlinks do not exist and no cameras are found. `setup_host.sh` now installs `udev` explicitly.
+
+**`procps` is absent on minimal distros — `ps` fails** *(2026-06-01)*
+`vid_mux_test` health verification in `rebuild_vid_mux.sh` uses `ps aux | grep "[m]ock_streamer"`. On distros without procps (or with busybox ps), the command either does not exist or its output format is incompatible. `setup_host.sh` now installs `procps` explicitly.
+
+**The systemd `scanbox.service` can become outdated** *(2026-06-01)*
+If `rebuild_vid_mux.sh` is moved from `scripts/` to the project root (or any path change), the service at `/etc/systemd/system/` still points to the old path. `host/setup_host.sh` reinstalls it, but on an already-configured Pi it must be copied manually:
+```bash
+sudo cp host/scanbox.service /etc/systemd/system/scanbox.service
+sudo systemctl daemon-reload
+```
+Symptom: `journalctl -u scanbox.service` shows `Unable to locate executable`.
+
+**Docker images are cached — changing a config file requires a rebuild** *(2026-06-01)*
+`scanbox_dhcp` copies `dnsmasq.conf` inside the image at build time. If `dnsmasq.conf` is edited afterwards, the running container keeps using the old version. Force a rebuild:
+```bash
+docker build -t scanbox-scanbox_dhcp scanbox_dhcp/
+docker rm -f scanbox_dhcp
+docker run -d --name scanbox_dhcp --network=host --cap-add=NET_ADMIN --restart=always scanbox-scanbox_dhcp
+```
+The same applies to all containers with baked-in (not bind-mounted) configurations.
+
 **Camera name detection: many cameras do not expose a USB product string** *(2026-06-01)*
 `/sys/class/video4linux/videoN/name` is not available for devices mapped to high-index
 slots (`video100`, `video101`) that do not appear in the container's sysfs. Use

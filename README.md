@@ -5,7 +5,7 @@ A deterministic video source switcher for Raspberry Pi 4. Hot-swaps between a ph
 ## Architecture
 
 ### Containerization (strict)
-Everything that can run in a container does. The host OS stays minimal. Only Docker Engine, kernel headers, git, and systemd service files are installed on the host — all automated by `host/setup_host.sh`.
+Everything that can run in a container does. The host OS stays minimal. Only Docker Engine, kernel headers, essential host utilities (kmod, procps, udev), configfs mount, git, and systemd service files are installed on the host — all automated by `host/setup_host.sh`. This ensures the stack works even on minimal Debian installations (debootstrap --variant=minbase).
 
 ### Containers
 
@@ -87,7 +87,9 @@ scanbox/
 sudo ./host/setup_host.sh
 sudo reboot
 ```
-This installs Docker, kernel headers, systemd services, and generates `.env`. After reboot the full stack starts automatically.
+This installs Docker, kernel headers, essential host utilities (kmod, procps, udev), configfs mount, systemd services, and generates `.env`. After reboot the full stack starts automatically.
+
+> **Note for minimal distros:** `setup_host.sh` now explicitly installs `kmod` (modprobe/lsmod), `procps` (ps), and `udev` (by-id symlinks) — dependencies that minimal Debian installations may omit. configfs is added to `/etc/fstab` to guarantee the USB gadget setup works.
 
 ### Manual start / rebuild after code changes
 ```bash

@@ -11,7 +11,9 @@ Host provisioning scripts live in `host/`. The runtime operational script (`rebu
 Installs the bare minimum that must exist on the host OS:
 - Docker Engine + compose plugin
 - Kernel headers (`linux-headers-<running-kernel>`) — required so Vid_Mux_TEST can compile v4l2loopback inside its container against the live kernel
+- Essential host utilities: `kmod` (modprobe/lsmod), `procps` (ps), `udev` (by-id symlinks) — for minimal distro compatibility
 - `git`
+- configfs mount in `/etc/fstab` — required for USB gadget setup; systemd doesn't always mount it in minimal distros
 - Copies `host/scanbox-gadget.service` and `host/scanbox.service` to `/etc/systemd/system/` and enables them
 
 Also generates `.env` with `KBUILD_DIR=<path>` so `rebuild_vid_mux.sh` and `Vid_Mux_TEST` know where the kbuild scripts live.
@@ -63,12 +65,13 @@ sudo ./host/setup_usb_gadget.sh
 This is the primary operational script. It is called at every boot by `host/scanbox.service` and should also be called manually after code changes or when a new camera is plugged in.
 
 **Boot flow:**
-1. **scanbox_dhcp** — start if not already running (DHCP server on usb0)
-2. **vid_mux_test** — start if not already healthy; builds the image if missing; passes the three kernel header mounts needed to compile v4l2loopback
+1. **scanbox_dhcp** — start if not already running (DHCP server on usb0); `--restart=always`
+2. **vid_mux_test** — start if not already healthy; builds the image if missing; passes the three kernel header mounts needed to compile v4l2loopback; `--restart=always`
 3. **Wait for /dev/video200** — polls every 2s, timeout 120s; exits with error if it never appears
-4. **Camera discovery** — scans `/dev/v4l/by-id/*-video-index0`; assigns deterministic slots `video100`…`video103` (max 4 physical cameras)
-5. **Build SCANBOX_SOURCES** — JSON array `[{"id":N,"slot":"/dev/videoN","label":"..."}]` + `--device` flags; writes `/tmp/scanbox_cameras.env`
-6. **Stop, rebuild, relaunch vid_mux** — always rebuilds from source; passes `SCANBOX_SOURCES` as env var; mounts `snapshots/` as `/exports/snapshots`
+4. **Wait for mock_streamer** — polls `docker exec vid_mux_test ps aux` for the mock_streamer process (up to 60s); the container has no Docker healthcheck when launched via `docker run`
+5. **Camera discovery** — scans `/dev/v4l/by-id/*-video-index0`; assigns deterministic slots `video100`…`video103` (max 4 physical cameras)
+6. **Build SCANBOX_SOURCES** — JSON array `[{"id":N,"slot":"/dev/videoN","label":"..."}]` + `--device` flags; writes `/tmp/scanbox_cameras.env`
+7. **Stop, rebuild, relaunch vid_mux** — always rebuilds from source; `--restart=on-failure`; passes `SCANBOX_SOURCES` as env var; mounts `snapshots/` as `/exports/snapshots`
 
 **Usage:**
 ```bash

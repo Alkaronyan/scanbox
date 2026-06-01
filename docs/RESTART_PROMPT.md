@@ -11,7 +11,7 @@ We need to resume the project precisely where we left off. Act as our senior sof
 * The USB-C port on Pi 4 supports dwc2 gadget mode — this is the data connection to the PC
 
 ### Project Context & Decisions
-1. **Host OS Preservation (Strict Containerization)**: Everything that can run inside a container does. Only Docker Engine, kernel headers, git, and systemd services are installed on the host via host/setup_host.sh.
+1. **Host OS Preservation (Strict Containerization)**: Everything that can run inside a container does. Only Docker Engine, kernel headers, git, systemd services, and essential host utilities (udev, kmod, procps) are installed on the host via host/setup_host.sh. This ensures the stack works on minimal Debian distros (debootstrap --variant=minbase).
 2. **Component Separation**:
    * Vid_Mux Container: Production application. GStreamer switching, Flask REST API, MJPEG stream, Web UI.
    * Vid_Mux_TEST Container: Mock camera scaffold. Compiles v4l2loopback against host kernel, creates /dev/video200, feeds SMPTE synthetic stream.
@@ -156,6 +156,16 @@ SCANBOX_SOURCES=[...]
 
 ### Phase 3 — COMPLETED ✅
 USB NCM gadget + DHCP + full boot automation fully operational.
+
+**Boot reliability fixes (2026-06-01):**
+- `rebuild_vid_mux.sh`: added `--restart=on-failure` to vid_mux container — if it crashes at startup, Docker auto-restarts it with backoff instead of staying dead forever
+- `rebuild_vid_mux.sh`: waits for `mock_streamer` process inside vid_mux_test (via `docker exec`) before launching vid_mux — ensures the mock source is actually streaming frames, not just that /dev/video200 exists
+- `rebuild_vid_mux.sh`: added `--restart=always` to vid_mux_test and scanbox_dhcp containers
+
+**Host OS hardening for minimal distros (2026-06-01):**
+- `host/setup_host.sh` now explicitly installs: `kmod` (modprobe/lsmod), `procps` (ps), and `udev` (by-id symlinks) — tools that minimal Debian (debootstrap --variant=minbase) omits
+- `host/setup_host.sh` adds configfs mount to `/etc/fstab` — required by setup_usb_gadget.sh; systemd doesn't always mount it automatically in minimal distros
+- Architecture philosophy updated: host dependencies now explicitly documented as 4 categories (Docker, kernel headers, host utilities, git)
 
 **USB NCM Network (192.168.199.0/30 — point-to-point, 2 usable hosts):**
 * Pi (device side) : 192.168.199.1 — assigned by setup_usb_gadget.sh
