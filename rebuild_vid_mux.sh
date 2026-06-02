@@ -3,10 +3,14 @@
 #
 # Boot flow (called by host/scanbox.service):
 #   1. Start scanbox_dhcp (DHCP for USB NCM link) — skip if already running
-#   2. Start vid_mux_test (mock camera scaffold) — skip if already healthy
-#   3. Wait for /dev/video200 to appear (up to 120s)
-#   4. Detect all physical cameras under /dev/v4l/by-id/
-#   5. Stop, rebuild, and relaunch vid_mux with dynamic SCANBOX_SOURCES
+#   2. Detect physical cameras under /dev/v4l/by-id/
+#   3. Calculate MOCK_COUNT = max(0, 2 - PHYSICAL_COUNT)
+#   4. If MOCK_COUNT > 0: start vid_mux_test (loads v4l2loopback kernel module),
+#      wait for /dev/video200 to appear as confirmation the module is loaded.
+#      vid_mux does NOT read from /dev/video200 — mock sources use internal
+#      videotestsrc inside the GStreamer pipeline.
+#   5. Build SCANBOX_SOURCES (physical cameras + MOCK_COUNT virtual mock entries)
+#   6. Stop, rebuild, and relaunch vid_mux with the resulting SCANBOX_SOURCES
 #
 # Also used manually to pick up new cameras or rebuild after code changes.
 # Run from the scanbox project root: ./rebuild_vid_mux.sh
@@ -15,6 +19,15 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${PROJECT_ROOT}"
+
+# ── Flags ─────────────────────────────────────────────────────────────────────
+SKIP_BUILD=false
+for arg in "$@"; do
+    case "${arg}" in
+        --skip-build) SKIP_BUILD=true ;;
+        *) echo "Unknown argument: ${arg}" >&2; exit 1 ;;
+    esac
+done
 
 # ── Helper: check if a container is running ──────────────────────────────────
 container_running() {
@@ -55,76 +68,15 @@ else
     echo "  Started."
 fi
 
-# ── 2. vid_mux_test ───────────────────────────────────────────────────────────
+# ── 2. Camera Discovery ───────────────────────────────────────────────────────
 echo ""
-echo "[2] vid_mux_test (mock camera scaffold)"
-if container_healthy vid_mux_test; then
-    echo "  Already healthy — skipping."
-else
-    ensure_image scanbox-vid_mux_test Vid_Mux_TEST/
-    docker rm -f vid_mux_test 2>/dev/null || true
-
-    # KBUILD_DIR must be passed in for v4l2loopback to compile against the host kernel.
-    if [[ -f "${PROJECT_ROOT}/.env" ]]; then
-        KBUILD_DIR="$(grep '^KBUILD_DIR=' "${PROJECT_ROOT}/.env" | cut -d= -f2-)"
-    else
-        KBUILD_DIR="$(ls -d /usr/lib/linux-kbuild-* 2>/dev/null | head -1)"
-    fi
-
-    if [[ -z "${KBUILD_DIR}" ]]; then
-        echo "ERROR: Cannot determine KBUILD_DIR. Run sudo ./host/setup_host.sh first." >&2
-        exit 1
-    fi
-
-    echo "  KBUILD_DIR=${KBUILD_DIR}"
-    docker run -d --name vid_mux_test --network=host --privileged \
-        --restart=always \
-        -v /lib/modules:/lib/modules:ro \
-        -v /usr/src:/usr/src:ro \
-        -v "${KBUILD_DIR}:${KBUILD_DIR}:ro" \
-        scanbox-vid_mux_test
-    echo "  Started — waiting for mock camera (/dev/video200)..."
-fi
-
-# ── 3. Wait for /dev/video200 ─────────────────────────────────────────────────
-echo ""
-echo "[3] Waiting for /dev/video200 (mock camera)"
-TIMEOUT=120
-ELAPSED=0
-while [[ ! -e /dev/video200 ]]; do
-    if [[ "${ELAPSED}" -ge "${TIMEOUT}" ]]; then
-        echo "ERROR: /dev/video200 did not appear after ${TIMEOUT}s." >&2
-        echo "       Check: docker logs vid_mux_test" >&2
-        exit 1
-    fi
-    sleep 2
-    ELAPSED=$(( ELAPSED + 2 ))
-    echo "  ...${ELAPSED}s"
-done
-echo "  /dev/video200 is present."
-
-# Wait for mock_streamer process inside vid_mux_test to be running.
-# The container has no Docker healthcheck when launched via docker run,
-# so we check for the process directly.
-echo "  Waiting for mock_streamer inside vid_mux_test..."
-TIMEOUT=60
-ELAPSED=0
-while ! docker exec vid_mux_test sh -c 'ps aux | grep -q "[m]ock_streamer"' 2>/dev/null; do
-    if [[ "${ELAPSED}" -ge "${TIMEOUT}" ]]; then
-        echo "WARNING: mock_streamer not found after ${TIMEOUT}s." >&2
-        echo "         Continuing anyway — mock may not be streaming yet." >&2
-        break
-    fi
-    sleep 2
-    ELAPSED=$(( ELAPSED + 2 ))
-    echo "  ...waiting for mock_streamer ${ELAPSED}s"
-done
-echo "  mock_streamer is running inside vid_mux_test."
-
-# ── 4. Scan ALL physical cameras ─────────────────────────────────────────────
-echo ""
-echo "[4] Camera Discovery"
+echo "[2] Camera Discovery"
 echo "========================================"
+# Wait for udev to finish processing USB events before enumerating cameras.
+# Critical at boot: systemd may start this service before all cameras appear.
+echo "  Settling udev events..."
+udevadm settle --timeout=30 2>/dev/null || true
+
 mapfile -t PHYSICAL_CAMS < <(ls /dev/v4l/by-id/*-video-index0 2>/dev/null || true)
 PHYSICAL_COUNT=${#PHYSICAL_CAMS[@]}
 
@@ -133,21 +85,6 @@ for i in "${!PHYSICAL_CAMS[@]}"; do
     echo "    [${i}] ${PHYSICAL_CAMS[${i}]}"
 done
 
-MOCK_EXISTS=false
-if [[ -e /dev/video200 ]]; then
-    MOCK_EXISTS=true
-    echo "  Mock camera: /dev/video200 present"
-fi
-echo "========================================"
-
-if [[ "${PHYSICAL_COUNT}" -eq 0 ]] && [[ "${MOCK_EXISTS}" = "false" ]]; then
-    echo "ERROR: No video sources found. Cannot start vid_mux." >&2
-    exit 1
-fi
-if [[ "${PHYSICAL_COUNT}" -eq 0 ]]; then
-    echo "WARNING: No physical cameras found — launching with mock camera only." >&2
-fi
-
 # Cap at 4 physical camera slots (video100..video103)
 MAX_PHYSICAL=4
 if [[ "${PHYSICAL_COUNT}" -gt "${MAX_PHYSICAL}" ]]; then
@@ -155,7 +92,65 @@ if [[ "${PHYSICAL_COUNT}" -gt "${MAX_PHYSICAL}" ]]; then
     PHYSICAL_COUNT=${MAX_PHYSICAL}
 fi
 
-# ── 5. Build --device flags and SCANBOX_SOURCES JSON ─────────────────────────
+# Calculate how many mock sources to add so the total is at least 2.
+# 0 physical → 2 mocks | 1 physical → 1 mock | 2+ physical → 0 mocks
+MOCK_COUNT=$(( PHYSICAL_COUNT < 2 ? 2 - PHYSICAL_COUNT : 0 ))
+echo "  Mock sources needed : ${MOCK_COUNT}"
+echo "========================================"
+
+# ── 3. vid_mux_test (only if mocks are needed) ────────────────────────────────
+echo ""
+echo "[3] vid_mux_test (v4l2loopback kernel module)"
+if [[ "${MOCK_COUNT}" -eq 0 ]]; then
+    echo "  Skipping — 2+ physical cameras present, no mocks needed."
+else
+    if container_healthy vid_mux_test; then
+        echo "  Already healthy — skipping."
+    else
+        ensure_image scanbox-vid_mux_test Vid_Mux_TEST/
+
+        if [[ -f "${PROJECT_ROOT}/.env" ]]; then
+            KBUILD_DIR="$(grep '^KBUILD_DIR=' "${PROJECT_ROOT}/.env" | cut -d= -f2-)"
+        else
+            KBUILD_DIR="$(ls -d /usr/lib/linux-kbuild-* 2>/dev/null | head -1)"
+        fi
+
+        if [[ -z "${KBUILD_DIR}" ]]; then
+            echo "ERROR: Cannot determine KBUILD_DIR. Run sudo ./host/setup_host.sh first." >&2
+            exit 1
+        fi
+
+        echo "  KBUILD_DIR=${KBUILD_DIR}"
+        docker rm -f vid_mux_test 2>/dev/null || true
+        docker run -d --name vid_mux_test --network=host --privileged \
+            --restart=always \
+            -v /lib/modules:/lib/modules:ro \
+            -v /usr/src:/usr/src:ro \
+            -v "${KBUILD_DIR}:${KBUILD_DIR}:ro" \
+            scanbox-vid_mux_test
+        echo "  Started — waiting for /dev/video200 (kernel module load confirmation)..."
+    fi
+
+    # Wait for /dev/video200 — proves the v4l2loopback module loaded successfully.
+    # vid_mux does not read from this device; it only signals readiness.
+    TIMEOUT=120
+    ELAPSED=0
+    while [[ ! -e /dev/video200 ]]; do
+        if [[ "${ELAPSED}" -ge "${TIMEOUT}" ]]; then
+            echo "ERROR: /dev/video200 did not appear after ${TIMEOUT}s." >&2
+            echo "       Check: docker logs vid_mux_test" >&2
+            exit 1
+        fi
+        sleep 2
+        ELAPSED=$(( ELAPSED + 2 ))
+        echo "  ...${ELAPSED}s"
+    done
+    echo "  /dev/video200 present — kernel module loaded."
+fi
+
+# ── 4. Build SCANBOX_SOURCES JSON ─────────────────────────────────────────────
+echo ""
+echo "[4] Building SCANBOX_SOURCES"
 DEVICE_FLAGS=()
 SOURCES_JSON="["
 SLOT_BASE=100
@@ -175,15 +170,21 @@ for (( i=0; i<PHYSICAL_COUNT; i++ )); do
     SOURCE_ID=$(( SOURCE_ID + 1 ))
 done
 
-if [[ "${MOCK_EXISTS}" = "true" ]]; then
-    DEVICE_FLAGS+=("--device=/dev/video200:/dev/video200")
+for (( m=0; m<MOCK_COUNT; m++ )); do
     [[ "${SOURCE_ID}" -gt 0 ]] && SOURCES_JSON+=","
-    SOURCES_JSON+="{\"id\":${SOURCE_ID},\"slot\":\"/dev/video200\",\"label\":\"mock\"}"
-fi
+    if [[ "${MOCK_COUNT}" -eq 1 ]]; then
+        MOCK_LABEL="mock_0"
+    else
+        MOCK_LABEL="mock_${m}"
+    fi
+    # slot is null — vid_mux uses internal videotestsrc for mock sources.
+    SOURCES_JSON+="{\"id\":${SOURCE_ID},\"slot\":null,\"label\":\"${MOCK_LABEL}\"}"
+    SOURCE_ID=$(( SOURCE_ID + 1 ))
+done
 
 SOURCES_JSON+="]"
 
-# Write camera env file for external scripts/tests
+# Write camera env file for external scripts/tests (best-effort — may be root-owned from a prior boot run)
 {
     echo "CAMERA_COUNT=${PHYSICAL_COUNT}"
     for (( i=0; i<PHYSICAL_COUNT; i++ )); do
@@ -193,27 +194,30 @@ SOURCES_JSON+="]"
         echo "CAMERA_${i}_SLOT=/dev/video${SLOT_NUM}"
         echo "CAMERA_${i}_LABEL=${CAM_LABEL_I}"
     done
-    [[ "${MOCK_EXISTS}" = "true" ]] && echo "MOCK_CAMERA=/dev/video200"
+    echo "MOCK_COUNT=${MOCK_COUNT}"
     echo "SCANBOX_SOURCES=${SOURCES_JSON}"
-} > /tmp/scanbox_cameras.env
+} > /tmp/scanbox_cameras.env 2>/dev/null || echo "  (Warning: could not write /tmp/scanbox_cameras.env — skipping)"
 
-echo ""
-echo "SCANBOX_SOURCES=${SOURCES_JSON}"
+echo "  SCANBOX_SOURCES=${SOURCES_JSON}"
 
-# ── 6. Stop, rebuild, and relaunch vid_mux ───────────────────────────────────
+# ── 5. Stop, rebuild, and relaunch vid_mux ───────────────────────────────────
 echo ""
 echo "[5] vid_mux (video switcher)"
 docker rm -f vid_mux 2>/dev/null || true
 
-echo "  Building vid_mux image..."
-docker build -t vid_mux Vid_Mux/
+if [[ "${SKIP_BUILD}" == "true" ]]; then
+    echo "  Skipping image build (--skip-build)."
+else
+    echo "  Building vid_mux image..."
+    docker build -t vid_mux Vid_Mux/
+fi
 
 echo "  Launching vid_mux..."
 mkdir -p snapshots
 
 docker run -d --name vid_mux --network=host \
     --restart=on-failure \
-    "${DEVICE_FLAGS[@]}" \
+    "${DEVICE_FLAGS[@]+"${DEVICE_FLAGS[@]}"}" \
     -e SCANBOX_SOURCES="${SOURCES_JSON}" \
     -v "${PROJECT_ROOT}/snapshots:/exports/snapshots" \
     vid_mux

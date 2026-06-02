@@ -120,14 +120,20 @@ scanbox.service         →  rebuild_vid_mux.sh
 
 | Method | Path | Description |
 |---|---|---|
-| GET | / | Web UI |
-| GET | /stream | Live MJPEG stream |
-| GET | /api/v1/status | Active source + full source list |
-| POST | /api/v1/source | Switch source `{"source_id": 0\|1\|...}` |
-| POST | /api/v1/snapshot | Capture frame to disk. Optional body: `{"filename": "name.jpg"}` |
-| GET | /api/v1/snapshot/last | Retrieve last snapshot |
-| GET | /api/v1/camera/controls | V4L2 controls for the active source (empty for mock) |
-| POST | /api/v1/camera/control | Set V4L2 control `{"control": "saturation", "value": 128}` |
+| GET | `/` | Web UI |
+| GET | `/stream` | Live MJPEG stream |
+| GET | `/api/v1/status` | Active source, source list, running source ids |
+| POST | `/api/v1/heartbeat` | Keep cameras alive; first call starts all pipelines |
+| POST | `/api/v1/source` | Switch source `{"source_id": N}` |
+| POST | `/api/v1/source/<id>/start` | Start one source pipeline (debug) |
+| POST | `/api/v1/source/<id>/stop` | Stop one source pipeline (debug) |
+| POST | `/api/v1/snapshot` | Capture frame. Optional body: `{"filename": "name.jpg"}` |
+| GET | `/api/v1/snapshot/last` | Retrieve last snapshot |
+| GET | `/api/v1/snapshots` | Paginated snapshot list (`?offset=0&limit=5`) |
+| GET | `/api/v1/snapshot/<filename>` | Retrieve a named snapshot |
+| DELETE | `/api/v1/snapshot/<filename>` | Delete a named snapshot |
+| GET | `/api/v1/camera/controls` | V4L2 controls for the active source (empty for mock) |
+| POST | `/api/v1/camera/control` | Set V4L2 control `{"control": "saturation", "value": 128}` |
 
 ## Running Tests
 

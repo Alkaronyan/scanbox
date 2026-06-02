@@ -35,6 +35,16 @@
         <p class="shortcut-group-title">UI</p>
         <div class="shortcut-row"><kbd>F1</kbd><span>Open / close this panel</span></div>
       </div>
+      <div class="shortcut-group">
+        <p class="shortcut-group-title">Debug</p>
+        <div class="shortcut-row">
+          <label class="debug-toggle-label">
+            <input type="checkbox" id="debug-mode-toggle" onchange="applyDebugMode(this.checked)">
+            <span class="debug-toggle-track"></span>
+          </label>
+          <span>Debug mode</span>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -50,6 +60,9 @@
   <div class="section-body">
     <div class="stream-container">
       <img id="live-stream" src="/stream" alt="Live stream">
+      <div class="stream-watermark" id="stream-watermark">
+        <span id="watermark-text">CAMERA STOPPED</span>
+      </div>
     </div>
   </div>
 </div>
@@ -74,12 +87,20 @@
       </button>
       <div class="section-body">
         <div class="snapshot-area">
-          <button class="snap-btn" id="snap-btn">📷 Capture</button>
+          <div class="snap-actions">
+            <button class="scanbox-btn snap-btn" id="snap-btn">📷 Capture</button>
+            <button class="scanbox-btn snap-download-btn" id="snap-download-btn"
+                    onclick="downloadSelectedSnapshot()" disabled>⬇ Download</button>
+            <button class="scanbox-btn snap-delete-btn" id="snap-delete-btn"
+                    onclick="deleteSelectedSnapshot()" disabled>🗑 Delete</button>
+          </div>
           <div class="snapshot-preview">
             <img id="snapshot-img" src="" alt="Last snapshot">
             <p id="snap-label">No snapshot yet</p>
           </div>
         </div>
+        <select id="snap-select" onchange="onSnapshotSelected(this.value)"
+                style="margin-top:0.75rem" disabled></select>
         <p class="hint">Space to capture</p>
       </div>
     </div>

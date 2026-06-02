@@ -56,6 +56,7 @@ h1 { font-size: 1.6rem; letter-spacing: 0.1em; color: #7dd3fc; margin-bottom: 0.
 
 /* ── Live stream ─────────────────────────────────────────────────────── */
 .stream-container {
+  position: relative;
   width: 100%;
   background: #000;
   border-radius: 8px;
@@ -66,6 +67,17 @@ h1 { font-size: 1.6rem; letter-spacing: 0.1em; color: #7dd3fc; margin-bottom: 0.
   justify-content: center;
 }
 #live-stream { width: 100%; height: 100%; object-fit: contain; }
+
+.stream-watermark {
+  position: absolute; inset: 0;
+  display: none; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.55);
+  font-size: 1.8rem; font-weight: 700; color: #f87171;
+  letter-spacing: 0.15em; text-transform: uppercase;
+  border-radius: 8px; pointer-events: none;
+}
+.stream-watermark.visible { display: flex; }
+.stream-watermark.reinit  { color: #fbbf24; }
 
 /* ── Source buttons ──────────────────────────────────────────────────── */
 .source-btn {
@@ -79,6 +91,36 @@ h1 { font-size: 1.6rem; letter-spacing: 0.1em; color: #7dd3fc; margin-bottom: 0.
 }
 .source-btn:hover  { border-color: #7dd3fc; }
 .source-btn.active { border-color: #38bdf8; background: #0c2a3e; color: #7dd3fc; }
+.source-btn.cam-off { opacity: 0.45; }
+
+/* ── Debug mode ──────────────────────────────────────────────────────── */
+.debug-only { display: none !important; }
+body.debug-mode .debug-only { display: flex !important; }
+
+.debug-toggle-label {
+  position: relative; display: inline-block;
+  width: 36px; height: 20px; flex-shrink: 0;
+}
+.debug-toggle-label input { opacity: 0; width: 0; height: 0; }
+.debug-toggle-track {
+  position: absolute; inset: 0;
+  background: #2d3748; border-radius: 20px;
+  cursor: pointer; transition: background 0.2s;
+}
+.debug-toggle-track::after {
+  content: ''; position: absolute;
+  left: 3px; top: 3px; width: 14px; height: 14px;
+  background: #64748b; border-radius: 50%; transition: all 0.2s;
+}
+.debug-toggle-label input:checked + .debug-toggle-track { background: #0c2a3e; border: 1px solid #38bdf8; }
+.debug-toggle-label input:checked + .debug-toggle-track::after { left: 19px; background: #38bdf8; }
+
+.source-test-row {
+  display: flex; align-items: center; gap: 0.5rem;
+  margin-top: 0.75rem; padding-top: 0.75rem;
+  border-top: 1px solid #2d3748;
+}
+.source-test-btn { padding: 0.35rem 0.8rem; font-size: 0.78rem; }
 
 .dot {
   width: 9px; height: 9px;
@@ -104,6 +146,22 @@ h1 { font-size: 1.6rem; letter-spacing: 0.1em; color: #7dd3fc; margin-bottom: 0.
 }
 #snapshot-img.visible { display: block; }
 #snap-label { font-size: 0.7rem; color: #475569; margin-top: 0.4rem; }
+
+.snap-actions { display: flex; flex-direction: column; gap: 0.5rem; flex-shrink: 0; }
+.snap-actions button { width: 100%; }
+#snap-select {
+  width: 100%; background: #151821; color: #e2e8f0;
+  border: 2px solid #2d3748; border-radius: 8px;
+  padding: 0.45rem 0.6rem; font-size: 0.82rem; cursor: pointer;
+}
+#snap-select:hover:not(:disabled) { border-color: #4a5568; }
+#snap-select:disabled { opacity: 0.35; cursor: not-allowed; }
+.snap-download-btn { padding: 0.45rem 0.9rem; font-size: 0.82rem; }
+.snap-download-btn:hover:not(:disabled) { border-color: #a78bfa; background: #1e1535; }
+.snap-download-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.snap-delete-btn { padding: 0.45rem 0.9rem; font-size: 0.82rem; }
+.snap-delete-btn:hover:not(:disabled) { border-color: #f87171; background: #2d1515; }
+.snap-delete-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
 /* ── Status ──────────────────────────────────────────────────────────── */
 .status-row { display: flex; justify-content: space-between; font-size: 0.82rem; color: #64748b; }

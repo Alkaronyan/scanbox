@@ -33,7 +33,7 @@ services:
       - /usr/src:/usr/src:ro
       - ${KBUILD_DIR}:${KBUILD_DIR}:ro
     healthcheck:
-      test: ["CMD", "sh", "-c", "ps aux | grep -q '[m]ock_streamer'"]
+      test: ["CMD", "sh", "-c", "test -e /dev/video200"]
       interval: 5s
       timeout: 2s
       retries: 30
@@ -59,6 +59,7 @@ services:
   # ─────────────────────────────────────────────────────────────────────────
   vid_mux:
     build: ./Vid_Mux
+    image: vid_mux        # Shared tag — rebuild_vid_mux.sh also uses "vid_mux"
     container_name: vid_mux
     restart: on-failure
     network_mode: host
@@ -66,19 +67,15 @@ services:
       # Physical camera — deterministic by-id path (never changes).
       # NOTE: For multi-camera setups use rebuild_vid_mux.sh instead.
       - /dev/v4l/by-id/usb-046d_0809_5DD0F8C2-video-index0:/dev/video100
-      # Mock camera — created by vid_mux_test above
-      - /dev/video200:/dev/video200
     environment:
-      # Default single-camera + mock source definition.
-      # rebuild_vid_mux.sh overrides this at runtime for multi-camera setups.
-      SCANBOX_SOURCES: '[{"id":0,"slot":"/dev/video100","label":"usb-046d_0809_5DD0F8C2"},{"id":1,"slot":"/dev/video200","label":"mock"}]'
+      # Default: 1 physical camera + 1 mock (no physical device needed for mock).
+      # rebuild_vid_mux.sh overrides this at runtime based on detected cameras.
+      SCANBOX_SOURCES: '[{"id":0,"slot":"/dev/video100","label":"usb-046d_0809_5DD0F8C2"},{"id":1,"slot":null,"label":"mock_0"}]'
     volumes:
       - ./snapshots:/exports/snapshots
     depends_on:
       scanbox_dhcp:
         condition: service_started
-      vid_mux_test:
-        condition: service_healthy
 
   # ─────────────────────────────────────────────────────────────────────────
   # Test runner — pytest suite (all 5 layers) executed inside a container.

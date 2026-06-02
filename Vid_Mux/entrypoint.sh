@@ -5,17 +5,15 @@ echo "======================================================="
 echo "⚙️  Vid_Mux: Starting Video Switcher"
 echo "======================================================="
 
-if [[ ! -e /dev/video100 ]]; then
-    echo "❌ Error: Physical camera /dev/video100 not found."
+# Verify SCANBOX_SOURCES is set and contains at least one source.
+if [[ -z "${SCANBOX_SOURCES:-}" ]]; then
+    echo "❌ Error: SCANBOX_SOURCES is not set. Cannot build pipeline."
     exit 1
 fi
-echo "✅ Physical camera /dev/video100 present."
-
-if [[ -e /dev/video200 ]]; then
-    echo "✅ Mock camera /dev/video200 present (Vid_Mux_TEST running)."
-else
-    echo "⚠  /dev/video200 not found — source 1 will use synthetic SMPTE pattern."
+if ! python3 -c "import json,os,sys; d=json.loads(os.environ['SCANBOX_SOURCES']); sys.exit(0 if len(d)>0 else 1)"; then
+    echo "❌ Error: SCANBOX_SOURCES is empty or invalid JSON."
+    exit 1
 fi
-echo "🎥 Starting Vid_Mux (pipeline + API in single process)..."
 
+echo "🎥 Starting Vid_Mux (pipeline + API in single process)..."
 exec python3 /opt/vid_mux/main.py

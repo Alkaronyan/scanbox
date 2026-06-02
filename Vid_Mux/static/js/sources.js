@@ -13,12 +13,23 @@ function renderSources() {
   const el = document.getElementById('source-list');
   el.innerHTML = '';
   sources.forEach(s => {
+    const running = runningSourceIds.includes(s.id);
     const btn = document.createElement('button');
-    btn.className = 'source-btn' + (s.id === activeId ? ' active' : '');
+    btn.className = 'scanbox-btn source-btn' + (s.id === activeId ? ' active' : '') + (!running ? ' cam-off' : '');
     btn.innerHTML = `<span class="dot"></span>${s.name}`;
     btn.onclick = () => selectSource(s.id);
     el.appendChild(btn);
   });
+
+  // Debug-only test controls (hidden unless debug mode is active)
+  const row = document.createElement('div');
+  row.className = 'source-test-row debug-only';
+  row.innerHTML = `
+    <span class="hint">Test cam:</span>
+    <button class="scanbox-btn source-test-btn" onclick="startSource()">▶ Start</button>
+    <button class="scanbox-btn source-test-btn"
+            onclick="apiStopSource(activeId).then(fetchStatus)">⏹ Stop</button>`;
+  el.appendChild(row);
 }
 
 /**
@@ -33,7 +44,22 @@ async function selectSource(id) {
   renderSources();
   loadControls();
   const src = sources.find(s => s.id === id);
-  document.getElementById('status-source').textContent = src ? src.name : id;
+  const isRunning = runningSourceIds.includes(id);
+  document.getElementById('status-source').textContent =
+    src ? (isRunning ? src.name : `${src.name} · Stopped`) : id;
+  updateStreamWatermark();
+}
+
+/**
+ * Start the active source and show the "reinitializing" watermark immediately.
+ * @sideeffects Adds activeId to reInitializingSourceIds. Updates watermark.
+ *              POST /api/v1/source/{id}/start then fetchStatus.
+ */
+async function startSource() {
+  reInitializingSourceIds.add(activeId);
+  updateStreamWatermark();
+  await apiStartSource(activeId);
+  await fetchStatus();
 }
 
 /**

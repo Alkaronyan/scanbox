@@ -36,6 +36,12 @@ os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 _last_frame: bytes | None = None
 _last_frame_lock = threading.Lock()
 
+# Heartbeat / camera power management
+IDLE_TIMEOUT      = 30   # seconds without heartbeat before cameras are stopped
+_last_heartbeat   = 0.0
+_cameras_active   = False
+_hb_lock          = threading.Lock()
+
 
 def start_frame_refresher():
     """
@@ -59,14 +65,34 @@ def start_frame_refresher():
     t.start()
     log.info("Frame refresher started.")
 
+
+def start_camera_watchdog():
+    """
+    Background daemon thread: stops all cameras when no heartbeat has been
+    received for IDLE_TIMEOUT seconds.
+    """
+    def _run():
+        global _cameras_active
+        while True:
+            time.sleep(5)
+            with _hb_lock:
+                if _cameras_active and time.time() - _last_heartbeat > IDLE_TIMEOUT:
+                    log.info("No heartbeat for %ds — stopping all cameras.", IDLE_TIMEOUT)
+                    switcher.stop_all()
+                    _cameras_active = False
+    t = threading.Thread(target=_run, daemon=True, name="camera-watchdog")
+    t.start()
+    log.info("Camera watchdog started (idle timeout: %ds).", IDLE_TIMEOUT)
+
 def _active_physical_device() -> str | None:
-    """Return the device path of the currently active source, or None if it has no real V4L2
-    controls (mock camera on /dev/video200, SMPTE fallback with no slot)."""
+    """Return the device path of the currently active source, or None if it is a
+    mock/virtual source (no V4L2 controls available).
+    Mock sources have an empty/None slot (new format) or /dev/video200 (legacy)."""
     active_id = switcher.get_active_source()
     source = next((s for s in SOURCES if s["id"] == active_id), None)
     if source is None:
         return None
-    device = source.get("device", "")
+    device = source.get("device") or ""
     if not device or device == "/dev/video200":
         return None
     return device
@@ -74,8 +100,12 @@ def _active_physical_device() -> str | None:
 
 def _make_display_name(label: str) -> str:
     """Fallback display name derived from the by-id label (used when sysfs lookup fails)."""
-    if label == "mock":
-        return "Mock Camera"
+    if label == "mock" or label == "mock_0":
+        return "Mock Camera 1"
+    if label == "mock_1":
+        return "Mock Camera 2"
+    if label.startswith("mock_"):
+        return f"Mock Camera {label[5:]}"
     name = label.replace("usb-", "").replace("_", " ").strip()
     return name if name else label
 
@@ -133,9 +163,9 @@ def _build_sources_list() -> list[dict]:
                     src_id = int(entry["id"])
                     slot   = entry.get("slot", "")
                     label  = entry.get("label", "")
-                    is_mock = (not slot) or (slot == "/dev/video200") or (label == "mock")
+                    is_mock = (not slot) or (slot == "/dev/video200") or (label == "mock") or label.startswith("mock_")
                     if is_mock:
-                        name = "Mock Camera"
+                        name = _make_display_name(label)
                     else:
                         name = _get_camera_card_name(slot) or _make_display_name(label)
                     result.append({"id": src_id, "name": name, "device": slot})
@@ -332,7 +362,39 @@ def status():
         "active_source": active,
         "source_name": source["name"] if source else "unknown",
         "sources": SOURCES,
+        "running_sources": switcher.get_running_sources(),
     })
+
+
+@app.post("/api/v1/heartbeat")
+def heartbeat():
+    global _last_heartbeat, _cameras_active
+    with _hb_lock:
+        _last_heartbeat = time.time()
+        was_active = _cameras_active
+        _cameras_active = True
+    if not was_active:
+        log.info("First heartbeat — starting all cameras.")
+        threading.Thread(target=switcher.start_all, daemon=True).start()
+    return jsonify({"status": "ok"})
+
+
+@app.post("/api/v1/source/<int:source_id>/start")
+def start_source_endpoint(source_id):
+    if source_id not in {s["id"] for s in SOURCES}:
+        return jsonify({"status": "error", "message": "Unknown source"}), 404
+    ok = switcher.start_source(source_id)
+    return jsonify({"status": "success" if ok else "error",
+                    "running_sources": switcher.get_running_sources()})
+
+
+@app.post("/api/v1/source/<int:source_id>/stop")
+def stop_source_endpoint(source_id):
+    if source_id not in {s["id"] for s in SOURCES}:
+        return jsonify({"status": "error", "message": "Unknown source"}), 404
+    switcher.stop_source(source_id)
+    return jsonify({"status": "success",
+                    "running_sources": switcher.get_running_sources()})
 
 
 @app.post("/api/v1/source")
@@ -371,6 +433,36 @@ def last_snapshot():
     if path is None:
         return jsonify({"status": "error", "message": "No snapshots yet"}), 404
     return send_file(path, mimetype="image/jpeg")
+
+
+@app.get("/api/v1/snapshots")
+def list_snapshots():
+    offset = request.args.get("offset", 0, type=int)
+    limit  = request.args.get("limit", 5, type=int)
+    files  = sorted(glob.glob(os.path.join(SNAPSHOT_DIR, "snap_*.jpg")), reverse=True)
+    total  = len(files)
+    page   = [os.path.basename(f) for f in files[offset:offset + limit]]
+    return jsonify({"status": "ok", "files": page, "total": total, "offset": offset})
+
+
+@app.get("/api/v1/snapshot/<filename>")
+def get_snapshot(filename):
+    safe = re.sub(r'[^\w\-.]', '_', filename)
+    path = os.path.join(SNAPSHOT_DIR, safe)
+    if not os.path.isfile(path):
+        return jsonify({"status": "error", "message": "Not found"}), 404
+    return send_file(path, mimetype="image/jpeg")
+
+
+@app.delete("/api/v1/snapshot/<filename>")
+def delete_snapshot(filename):
+    safe = re.sub(r'[^\w\-.]', '_', filename)
+    path = os.path.join(SNAPSHOT_DIR, safe)
+    if not os.path.isfile(path):
+        return jsonify({"status": "error", "message": "Not found"}), 404
+    os.remove(path)
+    log.info("Snapshot deleted: %s", path)
+    return jsonify({"status": "success", "filename": safe})
 
 
 @app.get("/api/v1/camera/controls")

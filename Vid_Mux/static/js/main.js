@@ -7,8 +7,9 @@
 
 // ── Shared state ──────────────────────────────────────────────────────────
 // sources and activeId are populated by fetchStatus() and read by sources.js / ui.js.
-let sources      = [];
-let activeId     = 0;
+let sources        = [];
+let activeId       = 0;
+let runningSourceIds = [];  // populated by fetchStatus(), read by sources.js
 
 // zoomLevel and focusLevel are fake placeholders until PTZ is implemented.
 let zoomLevel    = 50;
@@ -17,19 +18,54 @@ let focusLevel   = 50;
 // Per-control debounce timers used by controls.js onSlider().
 let sliderTimers = {};
 
+// Debug mode flag — toggled from the F1 modal.
+let debugMode = false;
+
+// Sources currently being restarted (show "REINICIALIZANDO" watermark).
+let reInitializingSourceIds = new Set();
+
+// ── Debug mode ────────────────────────────────────────────────────────────
+function applyDebugMode(on) {
+  debugMode = on;
+  document.body.classList.toggle('debug-mode', on);
+  renderSources();
+}
+
+// ── Live stream watermark ─────────────────────────────────────────────────
+function updateStreamWatermark() {
+  const watermark = document.getElementById('stream-watermark');
+  const text = document.getElementById('watermark-text');
+  if (!watermark) return;
+  if (reInitializingSourceIds.has(activeId)) {
+    watermark.className = 'stream-watermark visible reinit';
+    text.textContent = 'REINITIALIZING…';
+  } else if (sources.length > 0 && !runningSourceIds.includes(activeId)) {
+    watermark.className = 'stream-watermark visible';
+    text.textContent = 'CAMERA STOPPED';
+  } else {
+    watermark.className = 'stream-watermark';
+    reInitializingSourceIds.delete(activeId);
+  }
+}
+
 // ── Fetch status + update sources / status panel ──────────────────────────
 /**
  * Poll /api/v1/status, refresh the source list, and update the status panel.
  * Called once on load and then every 3 s.
  * @sideeffects Writes sources, activeId globals. Updates DOM via renderSources.
- *              Updates #status-source text.
+ *              Updates #status-source text and stream watermark.
  */
 async function fetchStatus() {
   const d = await apiGetStatus();
-  sources  = d.sources;
-  activeId = d.active_source;
+  sources          = d.sources;
+  activeId         = d.active_source;
+  runningSourceIds = d.running_sources || [];
+  if (runningSourceIds.includes(activeId)) reInitializingSourceIds.delete(activeId);
   renderSources();
-  document.getElementById('status-source').textContent = d.source_name;
+  const isRunning = runningSourceIds.includes(activeId);
+  document.getElementById('status-source').textContent =
+    isRunning ? d.source_name : `${d.source_name} · Stopped`;
+  updateStreamWatermark();
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────
@@ -50,6 +86,11 @@ apiGetLastSnapshot().then(r => {
     document.getElementById('snap-label').textContent = 'Last saved snapshot';
   }
 }).catch(() => {});
+
+loadSnapshotGallery();
+
+apiHeartbeat();
+setInterval(apiHeartbeat, 10000);
 
 fetchStatus();
 loadControls();

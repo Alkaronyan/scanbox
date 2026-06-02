@@ -75,6 +75,31 @@ gst-launch-1.0 v4l2src device=/dev/video200 io-mode=rw num-buffers=3 ! fakesink
 never reads from v4l2loopback. `vid_mux_test` still runs and keeps `/dev/video200`
 alive as a boot-readiness signal, but vid_mux does not need the device mapped.
 
+**`mock_streamer.py` removed — vid_mux_test no longer writes to /dev/video200** *(2026-06-02)*
+`mock_streamer.py` wrote an SMPTE stream to `/dev/video200` but nothing in production ever
+consumed it (v4l2loopback's S_FMT restriction prevents reading it while the OUTPUT side holds
+the device open). The vid_mux mock source was always a `videotestsrc` internal to the
+pipeline. `mock_streamer.py` was deleted and `vid_mux_test/entrypoint.sh` now ends with
+`sleep infinity` instead of launching it. The container is still required to load the kernel
+module (`v4l2loopback`) when mock sources are needed, and serves as the base image for
+`test_runner`.
+
+**`vid_mux_test` only starts when mocks are needed** *(2026-06-02)*
+`rebuild_vid_mux.sh` now detects physical cameras before launching any container.
+`MOCK_COUNT = max(0, 2 - PHYSICAL_COUNT)`: with 2+ physical cameras, `vid_mux_test` does not
+start and the kernel compilation wait (~60-90 s) is eliminated entirely from boot.
+With 0 or 1 physical camera, 1 or 2 mock entries are added to `SCANBOX_SOURCES` with
+`slot: null` — `switcher.py` creates a `videotestsrc` for each one automatically.
+
+**Per-source independent pipelines replace `input-selector`** *(2026-06-02)*
+The original monolithic pipeline used a single `input-selector` with all sources feeding into it. This required all sources to be running simultaneously and made per-source start/stop impossible. Replaced with independent `Gst.Pipeline` per source: each source can be started, stopped, and restarted individually. Switching means changing which source's appsink callback enqueues to `frame_queue`. Physical cameras use MJPEG passthrough (no decode+re-encode); mock sources use `videotestsrc + jpegenc`. The appsink `sync=false` flag is still required to prevent timing-driven stalls.
+
+**`docker compose up` overwrites the dynamic SCANBOX_SOURCES built by `rebuild_vid_mux.sh`** *(2026-06-02)*
+`rebuild_vid_mux.sh` builds a custom `SCANBOX_SOURCES` JSON based on detected cameras and launches vid_mux via `docker run`. If `docker compose up -d` is later called (e.g. by the systemd service on the wrong code path), compose re-creates the vid_mux container using the static `SCANBOX_SOURCES` value in `docker-compose.yml`, discarding the dynamic one. Fix: `docker-compose.yml` now declares `image: vid_mux` (shared tag). The correct deploy flow is `docker compose build && ./rebuild_vid_mux.sh --skip-build`. The boot service calls `rebuild_vid_mux.sh` directly, never `docker compose up -d` for vid_mux.
+
+**Camera enumeration race with udev at boot** *(2026-06-02)*
+`rebuild_vid_mux.sh` could run before udev finished processing USB attach events, causing cameras to be invisible in `/dev/v4l/by-id/` at detection time even though they were physically connected. Fix: `udevadm settle --timeout=30` before the camera scan. This blocks until all pending udev events are processed.
+
 **GStreamer appsink backpressure freezes `_last_frame` after stream consumer disconnects** *(2026-06-01)*
 When `emit-signals=true, max-buffers=2, drop=true` is set on the appsink, `_on_new_sample`
 stops being called as soon as the buffer fills up and no downstream consumer is draining it.

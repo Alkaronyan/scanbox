@@ -3,7 +3,8 @@
 // Does NOT: touch the DOM, read or write any global variables.
 // Depends on: nothing.
 // Exports: apiGetStatus, apiSetSource, apiGetControls, apiSetControl,
-//          apiTakeSnapshot, apiGetLastSnapshot
+//          apiTakeSnapshot, apiGetLastSnapshot, apiListSnapshots, apiDeleteSnapshot,
+//          apiHeartbeat, apiStartSource, apiStopSource
 
 /**
  * Fetch current pipeline status (active source + full source list).
@@ -77,4 +78,59 @@ async function apiTakeSnapshot() {
  */
 async function apiGetLastSnapshot() {
   return fetch('/api/v1/snapshot/last');
+}
+
+/**
+ * List available snapshots, newest first, with pagination.
+ * @param {number} offset - Number of files to skip from the newest end.
+ * @param {number} limit  - Maximum number of filenames to return.
+ * @returns {Promise<{status:string, files:string[], total:number, offset:number}>}
+ * @sideeffects GET /api/v1/snapshots
+ */
+async function apiListSnapshots(offset, limit) {
+  const r = await fetch(`/api/v1/snapshots?offset=${offset}&limit=${limit}`);
+  return r.json();
+}
+
+/**
+ * Delete a snapshot by filename.
+ * @param {string} filename
+ * @returns {Promise<{status:string, filename:string}>}
+ * @sideeffects DELETE /api/v1/snapshot/<filename>
+ */
+async function apiDeleteSnapshot(filename) {
+  const r = await fetch(`/api/v1/snapshot/${filename}`, { method: 'DELETE' });
+  return r.json();
+}
+
+/**
+ * Send a heartbeat to keep cameras active.
+ * @returns {Promise<{status:string}>}
+ * @sideeffects POST /api/v1/heartbeat
+ */
+async function apiHeartbeat() {
+  const r = await fetch('/api/v1/heartbeat', { method: 'POST' });
+  return r.json();
+}
+
+/**
+ * Start the pipeline for a specific source.
+ * @param {number} sourceId
+ * @returns {Promise<{status:string, running_sources:number[]}>}
+ * @sideeffects POST /api/v1/source/<id>/start
+ */
+async function apiStartSource(sourceId) {
+  const r = await fetch(`/api/v1/source/${sourceId}/start`, { method: 'POST' });
+  return r.json();
+}
+
+/**
+ * Stop the pipeline for a specific source.
+ * @param {number} sourceId
+ * @returns {Promise<{status:string, running_sources:number[]}>}
+ * @sideeffects POST /api/v1/source/<id>/stop
+ */
+async function apiStopSource(sourceId) {
+  const r = await fetch(`/api/v1/source/${sourceId}/stop`, { method: 'POST' });
+  return r.json();
 }

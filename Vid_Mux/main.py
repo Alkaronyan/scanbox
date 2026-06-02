@@ -20,6 +20,7 @@ t.start()
 # Start the frame refresher — keeps _last_frame always current so the
 # GStreamer appsink never stalls due to backpressure from an idle queue.
 api.start_frame_refresher()
+api.start_camera_watchdog()
 
 # Run Flask API in the main thread (blocks)
 api.app.run(host="0.0.0.0", port=80, debug=False)

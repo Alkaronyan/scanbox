@@ -70,10 +70,8 @@ else
     echo "ℹ️  v4l2loopback already loaded in the shared kernel; skipping insmod."
 fi
 
-cd /opt/vid_mux_test
-
 echo "✅ Kernel module injected successfully into the Host OS."
-echo "🎥 Launching GStreamer synthetic video stream onto /dev/video200..."
+echo "   /dev/video200 is now available as a V4L2 loopback device."
+echo "   No stream is written to it — vid_mux uses internal videotestsrc for mock sources."
 
-# Execute the Python streamer script as PID 1 child (proper signal handling)
-exec python3 mock_streamer.py
+exec sleep infinity
