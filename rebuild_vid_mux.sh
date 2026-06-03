@@ -226,5 +226,35 @@ echo ""
 echo "========================================"
 echo "SCANBOX stack running."
 echo "  Sources : ${SOURCES_JSON}"
-echo "  Web UI  → http://$(hostname -I | awk '{print $1}')"
+
+# Find the first USB network interface with an assigned IPv4 (interface name may vary)
+USB_WEB_IP=""
+USB_WEB_IFACE=""
+for _iface in $(ls /sys/class/net/ 2>/dev/null); do
+    _dev=$(realpath "/sys/class/net/${_iface}/device" 2>/dev/null) || continue
+    [[ "${_dev}" == *"gadget"* ]] || continue
+    _ip=$(ip -4 -o addr show "${_iface}" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+    if [[ -n "${_ip}" ]]; then
+        USB_WEB_IP="${_ip}"
+        USB_WEB_IFACE="${_iface}"
+        break
+    fi
+done
+if [[ -z "${USB_WEB_IP}" ]]; then
+    USB_WEB_IP=$(hostname -I | awk '{print $1}')
+fi
+
+printf "  %-8s → http://%s\n" "Web UI" "${USB_WEB_IP}"
+
+# Also show other externally-accessible IPs; skip loopback, the USB iface already shown,
+# and virtual interfaces (docker bridges, veth pairs, etc. live under /devices/virtual/).
+for _iface in $(ls /sys/class/net/ 2>/dev/null); do
+    [[ "${_iface}" == "lo" ]] && continue
+    [[ "${_iface}" == "${USB_WEB_IFACE}" ]] && continue
+    _real=$(realpath "/sys/class/net/${_iface}" 2>/dev/null) || continue
+    [[ "${_real}" == *"/devices/virtual/"* ]] && continue
+    _ip=$(ip -4 -o addr show "${_iface}" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+    [[ -z "${_ip}" ]] && continue
+    printf "  %-8s → http://%s\n" "${_iface}" "${_ip}"
+done
 echo "========================================"

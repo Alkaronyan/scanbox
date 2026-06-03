@@ -21,7 +21,7 @@ let sliderTimers = {};
 // Debug mode flag — toggled from the F1 modal.
 let debugMode = false;
 
-// Sources currently being restarted (show "REINICIALIZANDO" watermark).
+// Sources currently being restarted (show "REINITIALIZING…" watermark).
 let reInitializingSourceIds = new Set();
 
 // ── Debug mode ────────────────────────────────────────────────────────────
@@ -89,8 +89,16 @@ apiGetLastSnapshot().then(r => {
 
 loadSnapshotGallery();
 
-apiHeartbeat();
-setInterval(apiHeartbeat, 10000);
+async function sendHeartbeat() {
+  const d = await apiHeartbeat();
+  if (d && d.cameras_starting) {
+    reInitializingSourceIds.add(activeId);
+    updateStreamWatermark();
+  }
+}
+
+sendHeartbeat();
+setInterval(sendHeartbeat, 10000);
 
 fetchStatus();
 loadControls();

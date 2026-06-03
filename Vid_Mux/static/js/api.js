@@ -105,7 +105,7 @@ async function apiDeleteSnapshot(filename) {
 
 /**
  * Send a heartbeat to keep cameras active.
- * @returns {Promise<{status:string}>}
+ * @returns {Promise<{status:string, cameras_starting:boolean}>}
  * @sideeffects POST /api/v1/heartbeat
  */
 async function apiHeartbeat() {

@@ -89,7 +89,7 @@ Vid_Mux production container fully operational.
 * GET  /                                → Web UI
 * GET  /stream                          → Live MJPEG stream (~30 fps)
 * GET  /api/v1/status                   → active source, source list, running_sources
-* POST /api/v1/heartbeat                → keep cameras alive; first call starts all pipelines
+* POST /api/v1/heartbeat                → keep cameras alive; first call starts all pipelines; returns `cameras_starting: bool`
 * POST /api/v1/source                   → {"source_id": N} — switch active source
 * POST /api/v1/source/<id>/start        → start one pipeline (debug)
 * POST /api/v1/source/<id>/stop         → stop one pipeline (debug)
@@ -123,9 +123,9 @@ Space=snapshot | Tab/←/→=cycle sources | Q/E=focus(fake) | Ctrl+Scroll=zoom(
 **Web UI features:**
 * Snapshot gallery: paginated drop-down (5 initial, +15 per expansion), download and delete per entry
 * Debug mode: pill toggle in F1 modal; enables Start/Stop buttons per source (hidden by default)
-* Stream watermark: "CAMERA STOPPED" (red) when active source is not running; "REINITIALIZING…" (amber) immediately after clicking Start
+* Stream watermark: "CAMERA STOPPED" (red) when active source is not running; "REINITIALIZING…" (amber) immediately when cameras start — triggered both on page connect/reconnect (heartbeat returns `cameras_starting: true`) and on manual Start button click
 * Status panel: appends "· Stopped" to source name when active source is not in running_sources
-* Heartbeat: sent every 10 s by the browser; first heartbeat starts all camera pipelines; 30 s idle timeout stops them
+* Heartbeat: sent every 10 s by `sendHeartbeat()` in main.js; first heartbeat starts all camera pipelines and returns `cameras_starting: true`; 30 s idle timeout stops them
 
 ### Dynamic Multi-Camera Support — COMPLETED ✅
 

@@ -79,7 +79,7 @@ This is the primary operational script. It is called at every boot by `host/scan
 ./rebuild_vid_mux.sh
 ```
 
-**Output:** prints `SCANBOX_SOURCES` JSON and the Web UI URL on success.
+**Output:** prints `SCANBOX_SOURCES` JSON and the Web UI URLs on success. The USB gadget interface IP (`192.168.199.1`) is shown first as the primary access URL, followed by any other physical interfaces (eth0, wlan0, etc.). Virtual interfaces (Docker bridges, veth pairs) are excluded. USB gadget detection is based on the sysfs path containing `gadget` — independent of the interface name (`usb0` is the current name but may vary).
 
 **Key design decision:** vid_mux is always rebuilt (not reused) so code changes take effect immediately. scanbox_dhcp and vid_mux_test are skipped if already healthy to keep boot time short.
 

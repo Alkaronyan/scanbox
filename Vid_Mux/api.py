@@ -376,7 +376,7 @@ def heartbeat():
     if not was_active:
         log.info("First heartbeat — starting all cameras.")
         threading.Thread(target=switcher.start_all, daemon=True).start()
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok", "cameras_starting": not was_active})
 
 
 @app.post("/api/v1/source/<int:source_id>/start")

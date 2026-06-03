@@ -83,7 +83,7 @@ Flask runs in the main thread. It accepts commands from the Web UI and external 
 }
 ```
 
-**`POST /api/v1/heartbeat`:** updates `_last_heartbeat` timestamp. If cameras were stopped (idle), starts all pipelines in a background thread. Called every 10 s by the Web UI (`api.js`). The camera watchdog polls every 5 s; cameras stop after 30 s without a heartbeat.
+**`POST /api/v1/heartbeat`:** updates `_last_heartbeat` timestamp. If cameras were stopped (idle), starts all pipelines in a background thread and returns `"cameras_starting": true`; otherwise `false`. Called every 10 s by the Web UI (`sendHeartbeat()` in `main.js`). The camera watchdog polls every 5 s; cameras stop after 30 s without a heartbeat.
 
 ---
 
@@ -149,7 +149,9 @@ A `<div id="stream-watermark">` is absolutely positioned over the MJPEG `<img>` 
 | Restart requested, waiting for confirmation | `REINITIALIZING…` | Amber (`#fbbf24`) |
 | Active source is running | *(hidden)* | — |
 
-`startSource()` in `sources.js` adds the source id to `reInitializingSourceIds` and calls `updateStreamWatermark()` immediately before the API call, so the amber state is shown without waiting for the polling interval.
+The amber state is triggered from two paths, both before any API confirmation:
+- **Page connect / reconnect after idle:** `sendHeartbeat()` in `main.js` receives `cameras_starting: true` and adds `activeId` to `reInitializingSourceIds`.
+- **Manual restart button:** `startSource()` in `sources.js` adds the source id to `reInitializingSourceIds` directly before calling `apiStartSource()`.
 
 ### Status panel
 
